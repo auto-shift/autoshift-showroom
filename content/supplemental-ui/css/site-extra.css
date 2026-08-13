@@ -121,24 +121,37 @@ video {
 .validate-btn:disabled { background: #adb5bd; cursor: not-allowed; animation: pulse 1.5s ease-in-out infinite; }
 [id^="validate-output-content"] { color: #00bfff !important; }
 /* ---------------------------------------------------------------
-   Mermaid sizing in the Showroom guide pane.
+   Mermaid diagram sizing.
 
-   The guide pane defaults to 30% of the viewport. Mermaid renders with
-   useMaxWidth, so a wide graph is scaled down to fit and becomes
-   unreadable. Give diagrams a readable floor and let the container
-   scroll horizontally instead of shrinking without limit.
+   This has to work in two very different containers:
+     - the Showroom guide pane, which defaults to 30% of the viewport
+     - a full-width page, such as the GitHub Pages build
+
+   An earlier version forced `max-width: none` to stop diagrams shrinking
+   in the narrow pane. That solved the pane and broke the full-width page,
+   where the SVG then grew to its natural size with nothing capping it.
+
+   The shrinking problem is now handled by drawing every diagram top-down
+   (flowchart TD) rather than left-right, so the honest rule is simply
+   "fit the container, never exceed it, and scroll if you must".
    --------------------------------------------------------------- */
-.mermaid,
-pre.mermaid,
-.imageblock.mermaid,
-figure.mermaid {
+.mermaid-block {
+  /* Keeps a diagram readable on a wide screen without letting it sprawl. */
+  max-width: 46rem;
+  margin: 1rem 0;
   overflow-x: auto;
-  max-width: 100%;
 }
 
-.mermaid svg,
-pre.mermaid svg {
-  min-width: 340px;
-  height: auto !important;
-  max-width: none !important;
+.mermaid-block pre.mermaid {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+/* Mermaid sets an inline max-width on the SVG via useMaxWidth. Leave it be:
+   it is what scales the diagram to the container. Only normalise height. */
+.mermaid-block svg {
+  height: auto;
+  max-width: 100%;
 }
