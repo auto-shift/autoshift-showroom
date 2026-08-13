@@ -20,16 +20,25 @@ ui:
       contents: "static_files: [ .nojekyll ]"
 
 antora:
+  # EVERY extension here is a LOCAL file, deliberately.
+  #
+  # The RHDP Showroom content image (ghcr.io/rhpds/showroom-content) ships
+  # @antora/cli and @antora/site-generator and nothing else. Antora treats a
+  # missing extension as fatal, so a single npm extension here means the image
+  # builds nothing, serves an empty directory, and every page 404s.
+  #
+  # Two npm extensions were removed for that reason:
+  #   @andrew-jones/antora-tabs-extension  - never used by any page
+  #   @sntke/antora-mermaid-extension      - replaced by inject-mermaid.js
+  #
+  # Do not add an npm extension unless you have confirmed the content image
+  # ships it. Local files are cloned with the repo and work everywhere.
   extensions:
-    - require: '@sntke/antora-mermaid-extension'
-      mermaid_library_url: https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs
-      script_stem: header-scripts
-      mermaid_initialize_options:
-        start_on_load: true
-    - require: '@andrew-jones/antora-tabs-extension'
+    # Turns [mermaid] literal blocks into <pre class="mermaid"> and injects the
+    # mermaid ESM loader.
+    - require: ./content/lib/inject-mermaid.js
     # Inlines buttons.js + site-extra.css into every page at build time.
-    # Required for the solve/validate panels. Reads the files off disk, so it
-    # does not depend on supplemental_files copying them into the UI output.
+    # Required for the solve/validate panels.
     - require: ./content/lib/inject-buttons.js
 
 output:
