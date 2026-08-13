@@ -1,0 +1,33 @@
+// Shared attributes for the AutoShift lab.
+// Include at the top of every page: include::partial$_attributes.adoc[]
+// Versions live here and are never hardcoded in prose.
+
+// Environment, injected at runtime by the Showroom deployer
+:console_url: {openshift_console_url}
+:api_url: {openshift_api_url}
+:ingress_domain: {openshift_cluster_ingress_domain}
+:user: {ssh_user}
+:bastion_host: {bastion_public_hostname}
+
+// Product versions, verified against the autoshiftv2 values files
+:ocp_version: 4.22.8
+:acm_channel: release-2.17
+:gitops_channel: gitops-1.21
+:pipelines_channel: pipelines-1.23
+:quay_channel: stable-3.18
+:nfd_channel: stable
+
+// AWS cluster-install (module 9).
+// These are injected at runtime from the Showroom user_data seeded by AgnosticD.
+// The values in content/antora.yml are non-functional placeholders for local builds.
+:aws_access_key_id: {aws_access_key_id}
+:aws_secret_access_key: {aws_secret_access_key}
+:aws_region: {aws_region}
+:aws_base_domain: {aws_base_domain}
+
+// AutoShift conventions
+:autoshift_repo: https://github.com/auto-shift/autoshiftv2
+:go_version: 1.25
+:release_name: autoshift
+:policy_namespace: policies-autoshift
+:gitops_namespace: openshift-gitops

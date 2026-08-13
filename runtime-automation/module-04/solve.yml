@@ -1,0 +1,7 @@
+- name: Module 4 Solve
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.debug:
+        msg: "Module 4 solve — replace with your automation tasks"

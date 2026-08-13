@@ -1,0 +1,637 @@
+= Operate and troubleshoot
+include::partial$_attributes.adoc[]
+:navtitle: Module 6: Operate and troubleshoot
+
+Module 5 ended with the per-cluster override confirmed in `local-cluster.rendered-config`. Every change so far has worked. Real fleets break: a label is absent, a policy is stuck, Red Hat OpenShift GitOps (Argo CD) shows OutOfSync after a refactor. This module gives you a repeatable diagnosis sequence, shows you the dry run safety switch to reach for before any risky change, and ends with deliberate breakage so you recognise what to look for when something goes wrong.
+
+[mermaid]
+....
+flowchart TD
+  A["1. Argo CD Application<br/>Synced + Healthy?"] --> B["2. ACM Policy (hub)<br/>Compliant?"]
+  B --> C["3. Placement + PlacementDecision<br/>Cluster selected?"]
+  C --> D["4. Replicated policy<br/>in cluster namespace"]
+  D --> E["5. ConfigurationPolicy or OperatorPolicy<br/>Root cause here"]
+....
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Walk the diagnostic chain from Argo CD Application to ConfigurationPolicy or OperatorPolicy to isolate the root cause of a NonCompliant policy
+* Enable and disable dry run mode and explain the 2 things it changes simultaneously
+* Explain what a policy `dependencies` block does and why it prevents a config policy from applying before its operator is installed
+
+== Exercise 1: The diagnostic toolkit
+
+Red Hat Advanced Cluster Management (ACM) governance has 5 layers between a values file and an applied configuration. A failure can occur at any layer, and the error message you see is usually 1 layer above the actual cause. Work top to bottom.
+
+The commands below use `policy-selfmanagedhub-labels` as the worked example. This policy is part of the `autoshift-cluster-labels` deployment and is currently Compliant. Working through a healthy chain first shows you what each step looks like before something breaks.
+
+=== Question 1: Is Argo CD even serving this policy?
+
+The ApplicationSet creates 1 Argo CD Application per policy directory. If the Application is missing or shows Error, Argo CD has not rendered the policy objects at all. ACM has nothing to enforce.
+
+[source,role="execute"]
+----
+oc get application autoshift-cluster-labels -n openshift-gitops
+----
+
+----
+NAME                       SYNC STATUS   HEALTH STATUS
+autoshift-cluster-labels   Synced        Healthy
+----
+
+Both columns must be positive. `OutOfSync` means the rendered manifests differ from what is in the cluster. `Degraded` means the deployed objects have not reached a healthy state.
+
+=== Question 2: Is the Policy Compliant on the hub?
+
+A Synced Application means Argo CD wrote the Policy object to the hub namespace. ACM then evaluates it and reports compliance back.
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy policy-selfmanagedhub-labels -n {policy_namespace}
+----
+
+[subs="attributes"]
+----
+NAME                          REMEDIATION ACTION   COMPLIANCE STATE   AGE
+policy-selfmanagedhub-labels  enforce              Compliant          10m
+----
+
+`NonCompliant` here means ACM detected a drift between the desired state in the policy and what is on the cluster. Read the policy Events or Status for the specific message:
+
+[source,role="execute",subs="attributes"]
+----
+oc describe policy policy-selfmanagedhub-labels -n {policy_namespace} | tail -30
+----
+
+=== Question 3: Which clusters does the Placement select?
+
+A Compliant hub-level policy that never reaches a cluster is almost always a Placement problem. The Placement predicate must match at least 1 label on the target cluster. ACM creates a PlacementDecision listing the selected clusters.
+
+[source,role="execute",subs="attributes"]
+----
+oc get placementdecision -n {policy_namespace} \
+  -l cluster.open-cluster-management.io/placement=placement-policy-selfmanagedhub-labels
+----
+
+----
+NAME                                                AGE
+placement-policy-selfmanagedhub-labels-decision-1  5m
+----
+
+No PlacementDecision means the Placement selected nothing. Check the Placement predicates and the ManagedCluster labels:
+
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o yaml | grep 'autoshift.io/'
+----
+
+=== Question 4: Is a replicated policy in the cluster namespace?
+
+When ACM selects a cluster via a PlacementDecision, it copies the Policy into the cluster's own namespace on the hub. This replicated policy is what the cluster's policy agent evaluates. Its name is `<policy-namespace>.<policy-name>`.
+
+[source,role="execute"]
+----
+oc get policy -n local-cluster | grep selfmanagedhub
+----
+
+----
+policies-autoshift.policy-selfmanagedhub-labels  enforce  Compliant
+----
+
+If this object is absent but the PlacementDecision exists, the replication step failed. Delete the PlacementDecision to force re-creation, or delete the replicated policy directly (covered below).
+
+=== Question 5: What do the inner policies say?
+
+The replicated policy contains 1 or more ConfigurationPolicy or OperatorPolicy objects. ACM creates these in the cluster namespace. List them to find the one reporting the failure:
+
+[source,role="execute"]
+----
+oc get configurationpolicy,operatorpolicy -n local-cluster
+----
+
+When a resource shows NonCompliant, describe it:
+
+[source,role="execute"]
+----
+oc describe configurationpolicy <name> -n local-cluster
+----
+
+The `Message` field in the status conditions names the specific resource and field that caused the violation.
+
+=== 2 fixes for stuck policies
+
+When ACM's evaluation loop gets stuck, 2 commands cover the most common cases.
+
+*Force re-evaluation.* ACM evaluates each policy on the `evaluationInterval` setting. The default is `watch`, which is event-driven and typically reacts within seconds. If you need evaluation to run immediately regardless, annotate the hub-level policy with the trigger annotation:
+
+[source,role="execute",subs="attributes"]
+----
+oc annotate policy policy-selfmanagedhub-labels -n {policy_namespace} \
+  policy.open-cluster-management.io/trigger-update="$(date +%s)" --overwrite
+----
+
+*Delete the stuck replicated policy.* If a replicated policy is stuck in `Pending` despite its dependency being Compliant, the replication state machine can deadlock. Deleting the replicated policy in the cluster namespace forces ACM to re-create it from scratch:
+
+[source,role="execute"]
+----
+oc delete policy policies-autoshift.policy-selfmanagedhub-labels -n local-cluster
+----
+
+ACM recreates the object within seconds. Watch for it to reappear and evaluate.
+
+=== Verify
+
+Confirm both the Application and the Policy are healthy before moving on.
+
+[source,role="execute"]
+----
+oc get application autoshift-cluster-labels -n openshift-gitops
+----
+
+----
+NAME                       SYNC STATUS   HEALTH STATUS
+autoshift-cluster-labels   Synced        Healthy
+----
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy policy-selfmanagedhub-labels -n {policy_namespace}
+----
+
+[subs="attributes"]
+----
+NAME                          REMEDIATION ACTION   COMPLIANCE STATE
+policy-selfmanagedhub-labels  enforce              Compliant
+----
+
+== Exercise 2: Dry run mode as the fleet-wide safety switch
+
+`autoshift.dryRun` lives in `autoshift/values/global.yaml` and defaults to `false`. Setting it to `true` changes 2 things at once through the ApplicationSet template.
+
+First, the ApplicationSet passes `REMEDIATION=inform` to the PolicyGenerator Composable More Plugin (CMP) sidecar (`autoshift/templates/autoshift-app-set.yaml:99`). The PolicyGenerator substitutes `$\{REMEDIATION}` into the `remediationAction` field of every policy it renders. Inform mode means ACM reports violations but does not enforce them.
+
+Second, the ApplicationSet sets `prune: false` and `selfHeal: false` on the Argo CD sync policy for all Applications (lines 168 to 169). Argo CD stops pruning deleted objects and stops correcting drift.
+
+Combined, those 2 changes mean the fleet observes without acting. Reach for dry run before any change to a shared clusterset that will touch every cluster at once. Apply in inform mode first. Review what would change. Then flip dry run off and apply again.
+
+. Set dry run to `true`:
++
+[source,role="execute"]
+----
+sed -i 's/dryRun: false/dryRun: true/' autoshift/values/global.yaml
+----
+
+. Confirm the change:
++
+[source,role="execute"]
+----
+grep 'dryRun' autoshift/values/global.yaml
+----
++
+----
+  dryRun: true
+----
+
+. Apply. The ApplicationSet re-renders every PolicyGenerator policy with `REMEDIATION=inform`:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clusters/local-cluster.yaml
+----
+
+. Wait for the Applications to sync. The policy objects are re-created with `remediationAction: inform`:
++
+[source,role="execute"]
+----
+oc get applications.argoproj.io -n openshift-gitops \
+  -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status \
+  | head -10
+----
++
+----
+NAME                             SYNC    HEALTH
+autoshift-cluster-labels         Synced  Healthy
+autoshift-policy-foundation      Synced  Healthy
+autoshift-user-workload-monitoring Synced Healthy
+...
+----
+
+. Check the REMEDIATION ACTION column on hub policies. PolicyGenerator-managed policies now show `inform`:
++
+[source,role="execute",subs="attributes"]
+----
+oc get policy -n {policy_namespace} \
+  -o custom-columns=NAME:.metadata.name,REMEDIATION:.spec.remediationAction,COMPLIANCE:.status.compliant
+----
++
+[subs="attributes"]
+----
+NAME                          REMEDIATION  COMPLIANCE
+policy-selfmanagedhub-labels  inform       Compliant
+policy-managedcluster-labels  inform       Compliant
+policy-uwm-enable             inform       Compliant
+----
++
+The `inform` value means every cluster is now watched, not enforced. A NonCompliant result under dry run tells you what would change when you flip back to `enforce`.
+
+. Restore dry run to `false`:
++
+[source,role="execute"]
+----
+sed -i 's/dryRun: true/dryRun: false/' autoshift/values/global.yaml
+----
+
+. Re-apply to return to enforce mode:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clusters/local-cluster.yaml
+----
+
+=== Verify
+
+After restoring `dryRun: false`, confirm the policies return to `enforce`:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy policy-selfmanagedhub-labels -n {policy_namespace} \
+  -o custom-columns=NAME:.metadata.name,REMEDIATION:.spec.remediationAction
+----
+
+[subs="attributes"]
+----
+NAME                          REMEDIATION
+policy-selfmanagedhub-labels  enforce
+----
+
+== Exercise 3: Deliberate breakage
+
+This exercise removes a label that the hub template reads, then has you diagnose what actually happened. The result is not what most people expect. Understanding the default behavior is as important as understanding a real failure.
+
+=== Re-enable Node Feature Discovery
+
+Module 4 left NFD disabled. The labels are still in `hub-minimal.yaml`; only the enable flag is `'false'`.
+
+. Set the enable flag back to `'true'`:
++
+[source,role="execute"]
+----
+sed -i "s/node-feature-discovery: 'false'/node-feature-discovery: 'true'/" \
+  autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. Confirm the change:
++
+[source,role="execute"]
+----
+grep '^      node-feature-discovery:' autoshift/values/clustersets/hub-minimal.yaml
+----
++
+----
+      node-feature-discovery: 'true'
+----
+
+. Apply:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clusters/local-cluster.yaml
+----
+
+. Wait for the NFD Application to sync:
++
+[source,role="execute"]
+----
+oc get application autoshift-node-feature-discovery -n openshift-gitops
+----
++
+----
+NAME                               SYNC STATUS   HEALTH STATUS
+autoshift-node-feature-discovery   Synced        Healthy
+----
+
+. Confirm both NFD policies are Compliant:
++
+[source,role="execute",subs="attributes"]
+----
+oc get policy -n {policy_namespace} | grep nfd
+----
++
+----
+policy-nfd-instance-deploy    enforce   Compliant   2m
+policy-nfd-operator-install   enforce   Compliant   2m
+----
+
+=== Remove the channel label
+
+The `node-feature-discovery-channel` label tells the hub template which Operator Lifecycle Manager (OLM) channel to use. Remove it and apply.
+
+. Remove the label from `hub-minimal.yaml`:
++
+[source,role="execute"]
+----
+sed -i '/node-feature-discovery-channel:/d' \
+  autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. Confirm the label is gone:
++
+[source,role="execute"]
+----
+grep 'node-feature-discovery' autoshift/values/clustersets/hub-minimal.yaml
+----
++
+----
+      node-feature-discovery: 'true'
+      node-feature-discovery-subscription-name: nfd
+      node-feature-discovery-source: redhat-operators
+      node-feature-discovery-source-namespace: openshift-marketplace
+      node-feature-discovery-version: 'nfd.4.22.0-202506191600'
+----
++
+`node-feature-discovery-channel` no longer appears.
+
+. Apply the change:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clusters/local-cluster.yaml
+----
+
+=== Diagnose using the toolkit
+
+Apply the diagnostic chain from exercise 1 to the NFD policy. Start at the top.
+
+. Is the Argo CD Application Synced?
++
+[source,role="execute"]
+----
+oc get application autoshift-node-feature-discovery -n openshift-gitops
+----
++
+----
+NAME                               SYNC STATUS   HEALTH STATUS
+autoshift-node-feature-discovery   Synced        Healthy
+----
+
+. Is the policy Compliant on the hub?
++
+[source,role="execute",subs="attributes"]
+----
+oc get policy policy-nfd-operator-install -n {policy_namespace}
+----
++
+[subs="attributes"]
+----
+NAME                        REMEDIATION ACTION   COMPLIANCE STATE   AGE
+policy-nfd-operator-install enforce              Compliant          4m
+----
++
+The policy is still Compliant. There is no failure.
++
+The hub template that reads `autoshift.io/node-feature-discovery-channel` from the ManagedCluster labels has a `| default "stable"` expression. When the label is absent, the template produces `"stable"`. The Subscription continues on the `stable` channel without interruption.
+
+. Read the channel the Subscription is actually using:
++
+[source,role="execute"]
+----
+oc get sub nfd -n openshift-nfd -o jsonpath='{.spec.channel}{"\n"}'
+----
++
+----
+stable
+----
++
+The channel is `stable`. That is the hub template's fallback value, not an explicit label.
+
+This is the non-obvious behavior: a missing label does not always cause a failure. Whether it causes one depends on whether the hub template has a `| default` expression. If the template has no default, an absent label produces an empty string, which corrupts the resolved manifest and causes an immediate NonCompliant OperatorPolicy. If the template has a default, the policy uses it silently.
+
+The risk is not always a failure. The risk is silent drift from the explicit value you intended.
+
+=== Restore the label
+
+Set the label explicitly. An explicit label shows intent in the values file and makes the running channel visible to anyone reading it. Append it the same way you added labels in the previous modules. Order does not matter inside the labels block, only the 6-space indentation:
+
+. Restore `node-feature-discovery-channel`:
++
+[source,role="execute",subs="attributes"]
+----
+echo "      node-feature-discovery-channel: {nfd_channel}" \
+  >> autoshift/values/clustersets/hub-minimal.yaml
+----
++
+[NOTE]
+====
+The label lands at the end of the file. That is still inside the `hub.labels` block, because `hub-minimal.yaml` ends inside it. This is the same append you used in Module 2 and Module 4.
+====
+
+. Confirm the label is present again:
++
+[source,role="execute"]
+----
+grep 'node-feature-discovery' autoshift/values/clustersets/hub-minimal.yaml
+----
++
+[subs="attributes"]
+----
+      node-feature-discovery: 'true'
+      node-feature-discovery-subscription-name: nfd
+      node-feature-discovery-source: redhat-operators
+      node-feature-discovery-source-namespace: openshift-marketplace
+      node-feature-discovery-version: 'nfd.4.22.0-202506191600'
+      node-feature-discovery-channel: {nfd_channel}
+----
+
+. Apply to restore the explicit channel:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clusters/local-cluster.yaml
+----
+
+=== Verify
+
+Confirm NFD is still Compliant and the Subscription shows the expected channel:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy -n {policy_namespace} | grep nfd
+----
+
+----
+policy-nfd-instance-deploy    enforce   Compliant
+policy-nfd-operator-install   enforce   Compliant
+----
+
+[source,role="execute"]
+----
+oc get sub nfd -n openshift-nfd -o jsonpath='{.spec.channel}{"\n"}'
+----
+
+----
+stable
+----
+
+== Policy dependencies as structural safety
+
+Some policies only make sense after another policy has completed. A `NodeFeatureDiscovery` custom resource (CR) is useless if the operator that handles its API is not yet installed. AutoShift encodes this ordering using the `dependencies` block in a policy spec.
+
+`policy-nfd-instance-deploy` declares a dependency on `policy-nfd-operator-install`. Read it from the hub:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy policy-nfd-instance-deploy -n {policy_namespace} -o yaml | grep -A 6 dependencies
+----
+
+----
+  dependencies:
+  - apiVersion: policy.open-cluster-management.io/v1
+    compliance: Compliant
+    kind: Policy
+    name: policy-nfd-operator-install
+    namespace: policies-autoshift
+----
+
+ACM evaluates this dependency before dispatching `policy-nfd-instance-deploy` to any cluster. If `policy-nfd-operator-install` is not Compliant on a cluster, `policy-nfd-instance-deploy` stays in `Pending` on that cluster regardless of what its own Placement says. The Pending state is not a failure. It is the policy waiting for the prerequisite.
+
+This pattern appears in every config policy that depends on an operator: configure ACS only after ACS is installed, configure the ODF storage cluster only after the ODF operator is installed. You do not coordinate the timing manually. The dependency block handles it.
+
+If `policy-nfd-instance-deploy` is stuck in Pending after the operator is installed, check whether `policy-nfd-operator-install` has reached Compliant on the targeted cluster. A single NonCompliant cluster on the prerequisite holds the dependent policy for that cluster only.
+
+== Troubleshooting
+
+=== Policy shows NonCompliant immediately after a label change
+
+*Issue:* A policy flips to NonCompliant within seconds of applying a label change.
+
+*Diagnosis:* A label that a hub template reads may have been removed or renamed. Hub templates without a `| default` expression produce an empty string when the label is absent, which corrupts the resolved manifest. Identify what changed:
+
+[source,role="execute"]
+----
+git diff autoshift/values/
+----
+
+Then describe the hub-level policy for the specific message:
+
+[source,role="execute",subs="attributes"]
+----
+oc describe policy <policy-name> -n {policy_namespace} | tail -30
+----
+
+*Fix:* Restore the missing label in the values file and re-apply. The resolved manifest will be invalid until the label is present.
+
+=== Application is Synced but the Policy does not appear in the hub namespace
+
+*Issue:* `oc get application autoshift-<name> -n openshift-gitops` shows `Synced Healthy`, but `oc get policy -n policies-autoshift | grep <name>` returns nothing.
+
+*Common cause:* The Placement predicate selects no cluster, so ACM has no target and reports no compliance. The Policy object exists but its status section is empty. Check the PlacementDecision:
+
+[source,role="execute",subs="attributes"]
+----
+oc get placementdecision -n {policy_namespace} \
+  -l cluster.open-cluster-management.io/placement=placement-<policy-name>
+----
+
+If no PlacementDecision exists, verify the required label is on `local-cluster`:
+
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o yaml | grep 'autoshift.io/'
+----
+
+=== Replicated policy is stuck in Pending
+
+*Issue:* The replicated policy in the `local-cluster` namespace shows `Pending` even though the prerequisite policy is Compliant.
+
+*Cause:* The replication state machine can deadlock when a dependency transitions Compliant and then changes again quickly. Delete the replicated policy in the cluster namespace to force re-creation:
+
+[source,role="execute"]
+----
+oc delete policy policies-autoshift.<policy-name> -n local-cluster
+----
+
+ACM recreates the object within seconds and re-evaluates the dependency from the current state.
+
+=== OLM Subscription has no state after the OperatorPolicy enforces
+
+*Issue:* `oc get sub <name> -n <namespace>` shows the Subscription exists but `status.currentCSV` and `status.state` are blank.
+
+*Cause:* OLM may be unable to resolve the catalog entry. Common causes are an unavailable CatalogSource or a `-version` label naming a ClusterServiceVersion (CSV) that does not exist in the channel.
+
+*Diagnosis:*
+
+[source,role="execute"]
+----
+oc get catalogsource -n openshift-marketplace | grep redhat
+oc get installplan -n <operator-namespace>
+----
+
+If the CatalogSource shows `READY: false`, the issue is catalog connectivity. If an InstallPlan exists but stays in a failed state, the CSV name does not match any available version in the channel. Remove the `-version` label or correct it to a valid CSV name, then re-apply.
+
+=== Policy compliance status appears stale after a values file change
+
+*Issue:* You applied a `helm upgrade` with a changed label but the compliance status on the Policy has not updated after 2 minutes.
+
+*Cause:* ACM evaluates each policy on the `evaluationInterval` setting. The default is `watch`, which is event-driven and should react within seconds. If it is not triggering, force evaluation manually:
+
+[source,role="execute",subs="attributes"]
+----
+oc annotate policy <policy-name> -n {policy_namespace} \
+  policy.open-cluster-management.io/trigger-update="$(date +%s)" --overwrite
+----
+
+If re-evaluation reveals a new NonCompliant state, check the policy Events for the updated message. If the status still does not update, check the config-policy-controller logs on the hub:
+
+[source,role="execute"]
+----
+oc logs -n open-cluster-management-agent-addon \
+  deployment/config-policy-controller --tail=50
+----
+
+=== Application shows OutOfSync but helm template looks correct
+
+*Issue:* `oc get application autoshift-<name> -n openshift-gitops` shows `OutOfSync` after a `helm upgrade`.
+
+*Diagnosis:* Argo CD compares the rendered manifests from the git source against the live cluster state. An OutOfSync Application means the live resource differs from the rendered output. Describe the Application for the specific diff:
+
+[source,role="execute"]
+----
+oc describe application autoshift-<name> -n openshift-gitops | tail -20
+----
+
+*Common cause:* A field in the live resource was modified outside of Argo CD (manual `oc edit`, or an admission webhook added an annotation). With `selfHeal: true` active (the default when `dryRun: false`), Argo CD corrects the drift automatically on the next sync. If Argo CD cannot correct it, look for a field that Argo CD does not manage, such as a status subresource or a field excluded by `ignoreDifferences`.
+
+== Learning Outcomes
+
+By completing this module, you should now understand:
+
+* ✓ The diagnostic chain runs top to bottom: Argo CD Application sync and health, then Policy compliance on the hub, then Placement and PlacementDecision, then the replicated policy in the cluster namespace, then the ConfigurationPolicy or OperatorPolicy for the root cause message
+* ✓ `autoshift.dryRun: true` changes 2 things simultaneously: it sets `REMEDIATION=inform` in the ApplicationSet so PolicyGenerator policies report violations without enforcing them, and it sets `prune: false` and `selfHeal: false` on the Argo CD sync policy for all Applications
+* ✓ Removing a label that a hub template reads does not always cause a NonCompliant policy; a `| default` expression in the hub template silently substitutes a fallback value, which can cause the policy to remain Compliant while running with an unintended configuration
+* ✓ A `dependencies` block on a policy keeps it in `Pending` on a cluster until the named prerequisite policy is Compliant on that cluster; this prevents config policies from applying before the operator they configure is installed
+
+[.solve-button-placeholder]#solve-button-placeholder#
+
+[.validate-button-placeholder]#validate-button-placeholder#

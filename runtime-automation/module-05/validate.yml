@@ -1,0 +1,9 @@
+- name: Module 5 Validate
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Validate module completion
+      validation_check:
+        check: true
+        msg: "Module 5 validation — replace with your checks"

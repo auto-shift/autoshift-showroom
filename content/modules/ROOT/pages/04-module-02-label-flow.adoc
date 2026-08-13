@@ -1,0 +1,448 @@
+= Trace the label flow
+include::partial$_attributes.adoc[]
+:navtitle: Module 2: Label flow
+
+Module 1 ended with AutoShift deployed and the hub cluster assigned to no clusterset. Every policy exists. No policy applies to any cluster. This module traces why, then closes every link in the chain.
+
+The full path from a values file label to a running policy looks like this:
+
+[mermaid]
+....
+flowchart TD
+  A["hub-minimal.yaml<br/>labels: acm-channel: ..."] -->|"helm upgrade"| B["cluster-set.hub<br/>ConfigMap"]
+  B -->|"cluster-labels policy<br/>reads it"| C["local-cluster<br/>autoshift.io/* stamped"]
+  C -->|"Placement predicate<br/>matches"| D["PlacementDecision<br/>local-cluster selected"]
+  D -->|"PlacementBinding"| E["Policy<br/>evaluates Compliant"]
+....
+
+The chain breaks at the very first link when a cluster has no clusterset assignment. Exercise 1 confirms the break. Exercise 2 sets the assignment and traces each hop forward. Exercise 3 proves the chain runs in reverse when a label is removed.
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Trace a label from a values file through to a policy applied on a cluster
+* Explain why no policies apply before a clusterset is assigned
+* Read the ConfigMaps that cluster-labels generates and the labels it stamps
+
+== Exercise 1: Observe the null state
+
+The cluster-labels Argo CD Application has already rendered the `cluster-set.hub` ConfigMap from your values file. The Placement exists. The Policy exists. But `local-cluster` has no `cluster.open-cluster-management.io/clusterset` label, so it belongs to no ManagedClusterSet and the Placement selects nothing.
+
+Read each broken link in order.
+
+. Confirm that `local-cluster` has no clusterset assignment. An empty response means the label is absent:
++
+[source,role="execute"]
+----
+oc get managedcluster local-cluster \
+  -o jsonpath='{.metadata.labels.cluster\.open-cluster-management\.io/clusterset}{"\n"}'
+----
++
+----
+(empty)
+----
+
+. Confirm that no `autoshift.io/*` labels are stamped on `local-cluster`:
++
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o json | grep '"autoshift\.io/'
+----
++
+----
+(no output)
+----
+
+. Confirm that the infrastructure is already in place. The `cluster-set.hub` ConfigMap was rendered by the cluster-labels Application when AutoShift was deployed in Module 1. Nothing is consuming it yet because no cluster is assigned to the `hub` clusterset:
++
+[source,role="execute",subs="attributes"]
+----
+oc get configmap cluster-set.hub -n {policy_namespace}
+----
++
+----
+NAME              DATA   AGE
+cluster-set.hub   2      5m
+----
+
+. Check the Placement. It selects clusters in the `hub` ManagedClusterSet. No cluster is a member yet:
++
+[source,role="execute",subs="attributes"]
+----
+oc get placement placement-policy-selfmanagedhub-labels -n {policy_namespace}
+----
++
+----
+NAME                                     AGE
+placement-policy-selfmanagedhub-labels   5m
+----
+
+. Confirm that no PlacementDecision exists. ACM creates a PlacementDecision only when a Placement selects at least 1 cluster:
++
+[source,role="execute",subs="attributes"]
+----
+oc get placementdecisions -n {policy_namespace} \
+  -l cluster.open-cluster-management.io/placement=placement-policy-selfmanagedhub-labels
+----
++
+----
+No resources found in policies-autoshift namespace.
+----
+
+=== Verify
+
+A policy with no PlacementDecision has no cluster to evaluate against. Confirm the compliance state column is blank:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy policy-selfmanagedhub-labels -n {policy_namespace}
+----
+
+----
+NAME                             REMEDIATION ACTION   COMPLIANCE STATE   AGE
+policy-selfmanagedhub-labels     enforce                                 5m
+----
+
+The `COMPLIANCE STATE` column is blank. This is the expected state before any clusterset assignment.
+
+== Exercise 2: Assign the clusterset and trace the chain
+
+In Red Hat Advanced Cluster Management, a cluster joins a ManagedClusterSet when it carries the `cluster.open-cluster-management.io/clusterset` label. Set that label now and trace what follows.
+
+. Assign `local-cluster` to the `hub` ManagedClusterSet:
++
+[source,role="execute"]
+----
+oc label managedcluster local-cluster \
+  cluster.open-cluster-management.io/clusterset=hub
+----
++
+----
+managedcluster.cluster.open-cluster-management.io/local-cluster labeled
+----
+
+. Read the `cluster-set.hub` ConfigMap. The `data.labels` field is a JSON object of every label from the `hub` section of `hub-minimal.yaml`, with the `autoshift.io/` prefix applied. This ConfigMap was already here before the clusterset assignment. The cluster-labels policy reads all ConfigMaps labeled `autoshift.io/cluster-labels=""` in the policy namespace. For each ManagedCluster, it matches the ConfigMap whose name corresponds to the cluster's clusterset value and stamps the labels:
++
+[source,role="execute",subs="attributes"]
+----
+oc get configmap cluster-set.hub -n {policy_namespace} -o yaml
+----
++
+----
+apiVersion: v1
+data:
+  labels: '{"autoshift.io/acm-channel":"release-2.17","autoshift.io/acm-source":
+    "redhat-operators","autoshift.io/acm-source-namespace":"openshift-marketplace",
+    "autoshift.io/acm-subscription-name":"advanced-cluster-management",
+    "autoshift.io/gitops":"true","autoshift.io/gitops-channel":"gitops-1.21",
+    "autoshift.io/gitops-source":"redhat-operators","autoshift.io/gitops-source-namespace":
+    "openshift-marketplace","autoshift.io/gitops-subscription-name":"openshift-gitops-operator",
+    "autoshift.io/openshift-version":"4.22.8","autoshift.io/self-managed":"true"}'
+  values: '...'
+kind: ConfigMap
+metadata:
+  labels:
+    autoshift.io/cluster-labels: ""
+  name: cluster-set.hub
+  namespace: policies-autoshift
+----
+
+. Run this command a few times over the next 30 seconds until the `autoshift.io/*` labels appear on `local-cluster`. The cluster-labels policy needs a reconcile cycle to detect the new clusterset assignment:
++
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o json | grep '"autoshift\.io/'
+----
++
+----
+            "autoshift.io/acm-channel": "release-2.17",
+            "autoshift.io/acm-source": "redhat-operators",
+            "autoshift.io/acm-source-namespace": "openshift-marketplace",
+            "autoshift.io/acm-subscription-name": "advanced-cluster-management",
+            "autoshift.io/gitops": "true",
+            "autoshift.io/gitops-channel": "gitops-1.21",
+            "autoshift.io/gitops-source": "redhat-operators",
+            "autoshift.io/gitops-source-namespace": "openshift-marketplace",
+            "autoshift.io/gitops-subscription-name": "openshift-gitops-operator",
+            "autoshift.io/openshift-version": "4.22.8",
+            "autoshift.io/owning-deployment": "autoshift",
+            "autoshift.io/owning-namespace": "policies-autoshift",
+            "autoshift.io/self-managed": "true",
+----
++
+[NOTE]
+====
+The last 2 entries, `autoshift.io/owning-namespace` and `autoshift.io/owning-deployment`, are stamped automatically. You never author them in the values file. They identify which AutoShift deployment manages this cluster. Exercise 3 covers their purpose further.
+====
+
+. Check the Placement. Now that `local-cluster` is in the `hub` ManagedClusterSet, it satisfies the Placement predicate `clusterSets: [hub]`:
++
+[source,role="execute",subs="attributes"]
+----
+oc get placement placement-policy-selfmanagedhub-labels -n {policy_namespace}
+----
++
+----
+NAME                                     AGE
+placement-policy-selfmanagedhub-labels   7m
+----
+
+. Read the PlacementDecision. ACM creates this object when the Placement selects at least 1 cluster:
++
+[source,role="execute",subs="attributes"]
+----
+oc get placementdecisions -n {policy_namespace} \
+  -l cluster.open-cluster-management.io/placement=placement-policy-selfmanagedhub-labels
+----
++
+----
+NAME                                                       AGE
+placement-policy-selfmanagedhub-labels-decision-1          1m
+----
+
+. Read which cluster the decision selected. The PlacementDecision names the cluster explicitly in its status:
++
+[source,role="execute"]
+----
+oc get placementdecision \
+  -n policies-autoshift \
+  -l cluster.open-cluster-management.io/placement=placement-policy-selfmanagedhub-labels \
+  -o jsonpath='{.items[0].status.decisions[0].clusterName}{"\n"}'
+----
++
+----
+local-cluster
+----
+
+. Check the policy status. The PlacementDecision linked the Placement to the Policy through the PlacementBinding. ACM dispatched the policy to `local-cluster` and evaluated it:
++
+[source,role="execute",subs="attributes"]
+----
+oc get policy policy-selfmanagedhub-labels -n {policy_namespace}
+----
++
+----
+NAME                             REMEDIATION ACTION   COMPLIANCE STATE   AGE
+policy-selfmanagedhub-labels     enforce              Compliant          7m
+----
+
+=== Verify
+
+The full chain completed. Confirm the policy shows `Compliant`:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy policy-selfmanagedhub-labels -n {policy_namespace}
+----
+
+----
+NAME                             REMEDIATION ACTION   COMPLIANCE STATE   AGE
+policy-selfmanagedhub-labels     enforce              Compliant          7m
+----
+
+== Exercise 3: Prove that deletion propagates
+
+The cluster-labels policy uses `mustonlyhave` enforcement. ACM resolves the full expected label set from the `cluster-set.hub` ConfigMap and reconciles it against the actual labels on `local-cluster`. A label in the ConfigMap that is absent from the cluster is added. A label on the cluster that is absent from the ConfigMap is removed.
+
+Add a test label to the values file, apply it, then remove it and confirm it disappears from `local-cluster`.
+
+. Append a test label to `hub-minimal.yaml`. The file ends with the `hub.labels` block, so appending here keeps the label inside the correct section:
++
+[source,role="execute"]
+----
+echo "      lab-test: 'true'" >> autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. Confirm the line was added in the right place:
++
+[source,role="execute"]
+----
+tail -5 autoshift/values/clustersets/hub-minimal.yaml
+----
++
+----
+      acm-source-namespace: openshift-marketplace
+      lab-test: 'true'
+----
+
+. Re-apply the values with `helm upgrade`. Argo CD detects the change in the cluster-labels Application and re-syncs the `cluster-set.hub` ConfigMap:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. Wait for the cluster-labels Application to sync:
++
+[source,role="execute"]
+----
+oc get application autoshift-cluster-labels -n openshift-gitops
+----
++
+----
+NAME                       SYNC STATUS   HEALTH STATUS
+autoshift-cluster-labels   Synced        Healthy
+----
+
+. Confirm the label arrived on `local-cluster`:
++
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o json | grep '"autoshift\.io/lab-test'
+----
++
+----
+            "autoshift.io/lab-test": "true",
+----
+
+. Remove the test label from the values file and re-apply:
++
+[source,role="execute"]
+----
+sed -i "/lab-test: 'true'/d" autoshift/values/clustersets/hub-minimal.yaml
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. After the Application syncs, confirm the label is gone:
++
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o json | grep '"autoshift\.io/lab-test' || \
+  echo "label removed"
+----
++
+----
+label removed
+----
++
+The cluster-labels policy read the updated `cluster-set.hub` ConfigMap, computed the expected label set without `autoshift.io/lab-test`, and enforced it. Because the enforcement mode is `mustonlyhave`, the label was removed from the cluster.
+
+. Read the 2 auto-stamped owning labels. These are set by the cluster-labels policy on every reconcile and are not controlled by the values file:
++
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o json | grep '"autoshift\.io/owning'
+----
++
+----
+            "autoshift.io/owning-deployment": "autoshift",
+            "autoshift.io/owning-namespace": "policies-autoshift",
+----
++
+`autoshift.io/owning-namespace` is the policy namespace of the AutoShift deployment that manages this cluster. `autoshift.io/owning-deployment` strips the `policies-` prefix from that value. Both labels are set whenever the cluster-labels policy writes to a cluster. A second AutoShift deployment will not stamp labels onto a cluster whose `autoshift.io/owning-namespace` does not match its own policy namespace, which prevents 2 deployments from fighting over the same cluster.
+
+=== Verify
+
+Confirm `lab-test` is absent and both owning labels are present:
+
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o json | \
+  grep -E '"autoshift\.io/(lab-test|owning)'
+----
+
+----
+            "autoshift.io/owning-deployment": "autoshift",
+            "autoshift.io/owning-namespace": "policies-autoshift",
+----
+
+The `lab-test` line does not appear. The `owning` labels remain.
+
+== Troubleshooting
+
+=== Placement shows no clusters selected after clusterset assignment
+
+*Issue:* After running `oc label managedcluster local-cluster cluster.open-cluster-management.io/clusterset=hub`, no PlacementDecision appears.
+
+*Diagnosis:* Verify the label was applied and that a ManagedClusterSet named `hub` exists:
+
+[source,role="execute"]
+----
+oc get managedcluster local-cluster \
+  -o jsonpath='{.metadata.labels.cluster\.open-cluster-management\.io/clusterset}{"\n"}'
+oc get managedclusterset hub
+----
+
+*Common cause:* The `hub` ManagedClusterSet does not exist yet. The `policy-foundation` Helm chart creates it. Wait for the `policy-foundation` Application to reach `Synced` and `Healthy`, then re-run the `oc label` command:
+
+[source,role="execute"]
+----
+oc get application autoshift-policy-foundation -n openshift-gitops
+----
+
+=== The cluster-labels policy stays NonCompliant
+
+*Issue:* The policy shows `NonCompliant` after the clusterset is assigned.
+
+*Diagnosis:* Check the policy events:
+
+[source,role="execute",subs="attributes"]
+----
+oc describe policy policy-selfmanagedhub-labels -n {policy_namespace} | tail -30
+----
+
+*Common cause:* The `cluster-set.hub` ConfigMap has stale data because the cluster-labels Application has not yet synced after the last `helm upgrade`. Check its status:
+
+[source,role="execute"]
+----
+oc get application autoshift-cluster-labels -n openshift-gitops
+----
+
+If the sync status is `OutOfSync`, wait for auto-sync or trigger a refresh in the Argo CD console.
+
+=== Label not removed after deleting it from the values file
+
+*Issue:* You removed a label from the values file and re-ran `helm upgrade`, but the label is still on `local-cluster`.
+
+*Cause:* The cluster-labels Application has not finished syncing the updated ConfigMap, so the cluster-labels policy has not yet re-evaluated.
+
+*Check sync status:*
+
+[source,role="execute"]
+----
+oc get application autoshift-cluster-labels -n openshift-gitops
+----
+
+If the Application is already `Synced` and the label persists after about 60 seconds, force policy re-evaluation:
+
+[source,role="execute",subs="attributes"]
+----
+oc annotate policy policy-selfmanagedhub-labels -n {policy_namespace} \
+  policy.open-cluster-management.io/trigger-update="$(date +%s)" --overwrite
+----
+
+=== The autoshift.io/owning-namespace label is absent after labels are stamped
+
+*Issue:* The `autoshift.io/*` labels from the values file are present on `local-cluster`, but `autoshift.io/owning-namespace` is absent.
+
+*Cause:* The cluster-labels policy stamps `owning-namespace` only when the cluster's `cluster.open-cluster-management.io/clusterset` value matches the name suffix of a `cluster-set.*` ConfigMap in the policy namespace. If those 2 values do not match, the policy resolves no owning namespace and writes no owning labels.
+
+*Diagnosis:*
+
+[source,role="execute",subs="attributes"]
+----
+oc get configmap -n {policy_namespace} -l autoshift.io/cluster-labels=""
+----
+
+Confirm a ConfigMap named `cluster-set.hub` is listed. Its name suffix must exactly match the clusterset name on the ManagedCluster.
+
+== Learning Outcomes
+
+By completing this module, you should now understand:
+
+* ✓ A label in the values file flows through the cluster-set ConfigMap, the cluster-labels policy, and the ManagedCluster's labels before any Placement can select a cluster and any Policy can evaluate
+* ✓ A cluster with no clusterset assignment is selected by no Placement, so no policies apply regardless of what is in the values file
+* ✓ The cluster-labels chart renders 1 `cluster-set.<name>` ConfigMap per clusterset into the policy namespace, labeled `autoshift.io/cluster-labels=""`, and the cluster-labels policy reads all of them on every reconcile
+* ✓ `mustonlyhave` enforcement means removing a label from the values file removes it from the ManagedCluster on the next reconcile
+* ✓ `autoshift.io/owning-namespace` and `autoshift.io/owning-deployment` are stamped automatically and identify the AutoShift deployment that manages each cluster, preventing ownership conflicts between multiple deployments
+
+[.solve-button-placeholder]#solve-button-placeholder#
+
+[.validate-button-placeholder]#validate-button-placeholder#

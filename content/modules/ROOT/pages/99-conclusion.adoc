@@ -1,0 +1,95 @@
+= Conclusion and Next Steps
+include::partial$_attributes.adoc[]
+:navtitle: Conclusion and Next Steps
+
+== What You've Learned
+
+AutoShift has a single through-line. A label in a values file in git is the unit of intent. The 10 modules built each layer of machinery that carries that label to the right clusters and acts on it.
+
+=== The label flow
+
+Module 1 built the 3-phase infrastructure. Phase 1 bootstraps Red Hat Advanced Cluster Management (ACM) and OpenShift GitOps by hand using Helm. Phase 2 deploys the `autoshift/` chart as an Argo CD Application. Phase 3 is automatic: the ApplicationSet discovers every directory under `policies/` and deploys it. After phase 3, ACM policies take over management of the operators you installed by hand. ACM must come before GitOps on source installs because the repo-server's PolicyGenerator Config Management Plugin (CMP) init-container image is resolved from ACM's `multicluster-operators-hub-subscription` deployment at install time. Without that deployment, no image is found and the CMP sidecar never starts.
+
+Module 2 traced the full chain. Before a cluster joins a clusterset, no Placement selects it and no policy evaluates, regardless of what the values file contains. After the cluster joins, the `cluster-labels` policy reads the `cluster-set.<name>` ConfigMap, stamps the resolved `autoshift.io/*` labels onto the `ManagedCluster`, the Placement predicate matches, a `PlacementDecision` appears, and the policy reaches `Compliant`. Enforcement is `mustonlyhave`, so removing a label from the values file removes it from the cluster on the next reconcile. 2 labels, `autoshift.io/owning-namespace` and `autoshift.io/owning-deployment`, are stamped automatically on every reconcile and prevent 2 deployments from contending over the same cluster.
+
+=== The operator contract and structured configuration
+
+Module 4 applied the 5-label contract to Node Feature Discovery. The enable flag, subscription name, channel, source, and source namespace are the complete configuration interface for any OLM operator. The subscription name label is not optional: `scripts/generate-imageset-config.sh` discovers which operators to mirror by reading it. An absent subscription name makes the operator invisible to the mirror generator.
+
+Pinning a version adds that CSV to the OperatorPolicy's `versions` allow-list, which prevents the operator from moving past that version. ACM's OperatorPolicy has no Manual approval mode. `upgradeApproval` stays `Automatic`. The pin is enforced by the allow-list, not by holding an InstallPlan. Disabling an operator removes the cluster from the Placement selection and unbinds the policy, but the OLM Subscription and namespace remain on the cluster.
+
+Module 5 introduced the `config:` block for nested structured data that labels cannot carry. Labels map scalar values to OLM Subscription fields or Placement predicates. Nested configuration, such as Prometheus retention periods, storage sizes, and resource limits, belongs in `config:`. The `cluster-config-maps` Application renders the block into a `cluster-set-config.*` ConfigMap. The `cluster-configs` policy merges it with per-cluster overrides from `autoshift/values/clusters/` and writes the result to `\{clusterName}.rendered-config`. Policies read that ConfigMap via hub template lookup at dispatch time. Cluster values beat clusterset values.
+
+=== Operating a live system
+
+Module 6 gave you a repeatable diagnostic chain. Check the Argo CD Application first (sync and health), then the hub-level Policy compliance, then the Placement and PlacementDecision, then the replicated policy in the cluster namespace, and finally the ConfigurationPolicy or OperatorPolicy for the root-cause message. The chain has 5 layers. The error you see is usually 1 layer above the actual cause.
+
+`autoshift.dryRun: true` changes 2 things simultaneously. Every PolicyGenerator policy renders with `remediationAction: inform`, and Argo CD disables pruning and self-healing for all Applications. The fleet observes without acting. Reach for this before any change that will touch every cluster in a clusterset at once.
+
+A hub template with a `| default` expression does not raise NonCompliant when its label is absent. It uses the fallback silently, and the policy stays Compliant while running with an unintended value. That silent drift is the risk, not a loud failure. Policy `dependencies` blocks prevent config policies from applying before the operator they configure is installed, keeping dependent policies in `Pending` until the prerequisite is `Compliant`.
+
+=== Authoring new policies
+
+Module 7 showed how to create an operator policy from scratch. The generator script produces the 4 required files in the correct PolicyGenerator structure. Rendering the output requires kustomize with the PolicyGenerator plugin, not `helm template`. The integration test in `tools/` runs 5 stages: Helm render, hub template resolution, spoke template resolution, resolved-YAML validation, and the label contract. Any `autoshift.io/<key>` a policy consumes must be declared in `autoshift/values/clustersets/_example.yaml`. A consumed but undeclared key fails CI with a `Missing` message that names the policy and the fix. The `tools/` directory is its own Go module. The test must run from inside it.
+
+=== OCI publishing and disconnected environments
+
+Module 8 covered the build boundary between git mode and OCI mode. In git mode, the CMP sidecar renders each PolicyGenerator directory at sync time. In OCI mode, `make render-policy-charts` pre-renders every PolicyGenerator directory into a standard Helm chart at release time. ArgoCD pulls those charts from the registry and runs `helm template` directly. No CMP sidecar is involved. The ACM-before-GitOps ordering constraint disappears because there is no init-container lookup to perform.
+
+The ApplicationSet changes its generator when switching modes. Git mode uses a `git:` generator that auto-discovers `policies/*` directories. OCI mode uses a `list:` generator reading `autoshift/files/policy-list.txt`, generated at release time. The policy list is fixed for that version.
+
+Setting 2 labels, `disconnected-mirror: 'true'` and `mirror-catalog-suffix: 'mirror'`, rewrites the `source:` field in every operator policy through a shared ternary hub template expression. No policy code changes. The flip propagates to all clusters in the clusterset at the next sync. The `generate-imageset-config.sh` script discovers the mirror manifest from the same `-subscription-name` labels across all values files, which is why that label is mandatory for every operator policy.
+
+=== Fleet operations
+
+Module 9 showed that gradual rollout, declarative cluster assignment, OpenShift upgrades, and hub-of-hubs topology all reduce to the same primitive: a cluster moves between clustersets.
+
+`versionedClusterSets: true` creates versioned clustersets so 2 AutoShift releases run side by side with no shared clusters and no conflict. Committing `config.versionTag` in a cluster's values file causes the `cluster-set-assignment` policy to stamp the new clusterset label. That policy is owner-guarded: it will not touch a cluster owned by a different deployment. Each wave is a commit. `git revert` is the rollback.
+
+The upgrade policy set enforces `openshift-version` on every cluster in a target clusterset through 4 chained policies. A semver guard prevents downgrade requests. A dependency chain blocks the enforce policy from firing if the target version is invalid or unavailable. The ArgoCD Application reaches Healthy only when the completion gate confirms the upgrade has finished.
+
+Hub-of-hubs topology follows from 1 ACM constraint: a cluster is managed by exactly 1 ACM. A spoke hub cannot configure itself. Its Day 2 configuration must come from the hub above it. Policies that execute on a spoke hub use cluster-wide label-selected lookups for ConfigMaps, not namespace-scoped ones, because the hub above does not know which namespace the spoke hub's own AutoShift instance uses.
+
+All of this runs on the same path at every scale: set a value in git, ArgoCD reconciles it, a ConfigMap changes, a label changes, a Placement matches, a policy fires.
+
+== Next Steps
+
+The lab ran on 1 hub cluster using the local Helm dev path. A real fleet requires a few additional steps.
+
+*Move to a git-backed deployment.* The `autoshift/` chart and values files can live in separate repositories. `docs/external-values-repo.md` covers using a site-config repository as an Argo CD Application source so the code and site configuration evolve independently.
+
+*Add a second cluster and a second clusterset.* Create a clusterset profile under `autoshift/values/clustersets/` and a per-cluster file under `autoshift/values/clusters/`. Import the cluster into ACM, assign it to the new clusterset, and trace the label flow end to end on a cluster you did not bootstrap yourself.
+
+*Try a gradual rollout between 2 AutoShift versions.* Deploy a second Application with `versionedClusterSets: true`. Move 1 cluster to the new versioned clusterset. Verify compliance. Move the next wave. Confirm the first deployment goes idle when no clusters remain in its clusterset.
+
+*Enable the upgrade policy on an empty clusterset.* Set the target version labels on a new clusterset profile. Start with the clusterset empty. Move 1 cluster in. Follow the 4-policy dependency chain from channel update through completion gate. `docs/ocp-upgrade.md` covers the wave model in detail.
+
+*Stand up a hub-of-hubs tier.* The single-cluster lab cannot demonstrate the cross-namespace ConfigMap lookup that spoke-hub policies use, or the boundary between the hub-of-hubs ACM and a spoke hub's own ACM. `docs/hub-of-hubs.md` covers the exact bootstrap sequence for each tier.
+
+== References
+
+This is the only page in the lab with a references section. All prior modules cite commands and objects inline.
+
+=== AutoShift repository
+
+All documents listed here are in the link:{autoshift_repo}[auto-shift/autoshiftv2^] repository on GitHub.
+
+* link:{autoshift_repo}/blob/main/docs/quickstart.md[docs/quickstart.md^]: installation from source and from OCI, including the correct bootstrap order for source installs
+* link:{autoshift_repo}/blob/main/docs/developer-guide.md[docs/developer-guide.md^]: creating and modifying policies, including the PolicyGenerator directory structure
+* link:{autoshift_repo}/blob/main/docs/values-reference.md[docs/values-reference.md^]: complete label and values reference
+* link:{autoshift_repo}/blob/main/docs/gradual-rollout.md[docs/gradual-rollout.md^]: versioned clustersets and wave migration
+* link:{autoshift_repo}/blob/main/docs/cluster-set-assignment.md[docs/cluster-set-assignment.md^]: declarative clusterset assignment and owner-guarded stamping
+* link:{autoshift_repo}/blob/main/docs/ocp-upgrade.md[docs/ocp-upgrade.md^]: the OpenShift upgrade policy set and wave model
+* link:{autoshift_repo}/blob/main/docs/hub-of-hubs.md[docs/hub-of-hubs.md^]: hub-of-hubs topology and bootstrap sequence for each tier
+* link:{autoshift_repo}/blob/main/docs/releases.md[docs/releases.md^]: OCI release process and artifact publishing
+* link:{autoshift_repo}/blob/main/docs/cluster-install.md[docs/cluster-install.md^]: cluster provisioning policies
+* link:{autoshift_repo}/blob/main/docs/external-values-repo.md[docs/external-values-repo.md^]: separating code and site configuration into different repositories
+* link:{autoshift_repo}/blob/main/docs/workload-partitioning.md[docs/workload-partitioning.md^]: workload partitioning configuration
+
+=== Red Hat product documentation
+
+These references do not carry deep links because product documentation URLs change with each minor version. Find the current version by searching the product name on docs.redhat.com.
+
+* *Red Hat Advanced Cluster Management for Kubernetes*: governance framework, Policy, Placement, PlacementBinding, ConfigurationPolicy, and OperatorPolicy API reference
+* *Red Hat OpenShift GitOps*: ArgoCD ApplicationSet, sync policy, and health check reference
+* *Red Hat OpenShift Container Platform*: Operator Lifecycle Manager, ClusterVersion API, ImageDigestMirrorSet, and ImageTagMirrorSet reference

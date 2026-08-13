@@ -1,0 +1,281 @@
+= Workshop details
+include::partial$_attributes.adoc[]
+:navtitle: Workshop details
+:toc:
+:toc-placement: preamble
+:icons: font
+
+This page covers workshop logistics: schedule options, what the lab cluster provides, how to reach it, and the commands you run to confirm everything is working before module 1 begins.
+
+== Timing and schedule
+
+The workshop runs in 10 sequential modules.
+Each module builds on the cluster state left by the previous one, so the order matters.
+The full session runs approximately 4 hours 20 minutes.
+
+Module 3 is short but structurally important. It declares the 2 things in this lab that take real time, a container registry and an OpenShift cluster on Amazon Web Services (AWS), and then leaves them to build while you work through modules 4 to 9. Module 8 uses the registry once it is ready, and module 10 collects the finished cluster.
+
+That is why the expensive work does not appear as a long wait anywhere in the schedule.
+
+=== Full workshop
+
+[cols="1,4,>1",options="header"]
+|===
+|Module |Topic |Duration
+
+|1
+|Bootstrap: clone the repository, install ACM, install GitOps, deploy AutoShift
+|30 min
+
+|2
+|Label flow: from values file to ManagedCluster label to Placement to Policy
+|25 min
+
+|3
+|Declare the slow work: registry labels, FIPS SSH key, source secret, cluster values file
+|20 min
+
+|4
+|Enable a feature: Node Feature Discovery, version pinning, teardown
+|30 min
+
+|5
+|Config blocks and overrides: rendered-config ConfigMap, per-cluster beats clusterset
+|25 min
+
+|6
+|Operate and troubleshoot: diagnostics, dry run mode, deliberate breakage
+|30 min
+
+|7
+|Author a PolicyGenerator policy: scaffold, kustomize build, integration test
+|30 min
+
+|8
+|OCI and disconnected: publish to the registry built in module 3, disconnected mirror labels
+|35 min
+
+|9
+|Fleet operations capstone: gradual rollout, upgrades, hub-of-hubs topology
+|20 min
+
+|10
+|Your spoke cluster joined the fleet: verify inheritance, tear down
+|15 min
+|===
+
+=== Abbreviated schedules
+
+**Without the provisions (approximately 3 hours 30 minutes).** Drop the registry and the AWS cluster when cluster resources, an AWS sandbox account, or session time are short.
+
+Skip Exercises 1 and 3 of module 3, take module 8's local render fallback, and skip module 10 entirely. Every other module is unaffected, because they all operate on `local-cluster`.
+
+[cols="1,4,>1",options="header"]
+|===
+|Module |Topic |Duration
+
+|1 |Bootstrap |30 min
+|2 |Label flow |25 min
+|4 |Enable a feature |30 min
+|5 |Config blocks and overrides |25 min
+|6 |Operate and troubleshoot |30 min
+|7 |Author a PolicyGenerator policy |30 min
+|8 |OCI, local render path only |20 min
+|9 |Fleet operations capstone |20 min
+|===
+
+**Core path (approximately 2 hours).** Modules 1, 2, 4, and 6 cover the complete label flow, a full operator lifecycle, and the diagnostic loop.
+This is the minimum set that gives a learner a working mental model of AutoShift.
+
+[cols="1,4,>1",options="header"]
+|===
+|Module |Topic |Duration
+
+|1 |Bootstrap |30 min
+|2 |Label flow |25 min
+|4 |Enable a feature |30 min
+|6 |Operate and troubleshoot |30 min
+|===
+
+== Technical requirements
+
+[IMPORTANT]
+====
+Module 3 declares Quay Registry backed by OpenShift Data Foundation Multi-Cloud Gateway in standalone mode, and module 8 uses it.
+Standalone mode runs NooBaa only, with no Ceph and no additional storage nodes, but it still requires real compute headroom and takes approximately 40 minutes.
+If the cluster cannot support it, 2 fallbacks are available before you commit:
+
+* Inspect the pre-published AutoShift OCI artifacts on quay.io to see the rendered output without running anything locally.
+* Run `make render-policy-charts` on the bastion to see the PolicyGenerator-to-Helm transformation with no registry involved.
+
+The decision criteria are in the module 3 warning, and the exact fallback steps are in the module 8 introduction.
+====
+
+=== Cluster
+
+* OpenShift {ocp_version}, self-managed as `local-cluster`
+* No separate spoke cluster is required for modules 1 through 9. Module 3 provisions one on AWS and module 10 verifies and removes it
+* Red Hat Advanced Cluster Management installed during module 1 from channel `{acm_channel}`
+* OpenShift GitOps installed during module 1 from channel `{gitops_channel}`
+* Modules 3 and 8: headroom for NooBaa MCG pods plus Quay Registry on top of what ACM and GitOps consume
+
+=== Required tools
+
+The lab bastion has these tools pre-installed.
+If you are running outside the provisioned environment, verify each one before module 1.
+
+* `oc` (OpenShift CLI)
+* `helm` version 3.x or later
+* `git`
+* `make`
+* `go` version {go_version} or later, required for the integration tests in module 7
+
+=== Network
+
+* Outbound access to `github.com` to clone the AutoShift repository in module 1
+* Outbound access to `quay.io` for the module 8 fallback path
+* Access to the lab cluster API at `{api_url}`
+
+== Environment access
+
+Your lab environment provides a single hub OpenShift cluster and a bastion host.
+The Showroom interface embeds a terminal on the right side of the screen.
+Run all lab commands there.
+
+=== Bastion
+
+[source,role="execute",subs="attributes"]
+----
+ssh {user}@{bastion_host}
+----
+
+The Showroom terminal connects to the bastion automatically.
+If you are using the embedded terminal, this step is already done.
+
+=== OpenShift web console
+
+Open `{console_url}` in your browser.
+The workshop environment provides credentials at login.
+You use the console throughout to observe policy status, cluster operators, and ArgoCD applications.
+
+=== OpenShift CLI authentication
+
+The Showroom environment pre-authenticates the `oc` CLI on the bastion.
+If `oc whoami` returns an error, re-authenticate:
+
+[source,role="execute",subs="attributes"]
+----
+oc login --server={api_url}
+----
+
+Use the credentials shown in the workshop environment panel.
+
+== Pre-workshop checklist
+
+Work through this list before module 1 begins.
+Each item maps to a verification command in the section below.
+
+* [ ] The Showroom terminal responds: `echo hello` prints `hello`
+* [ ] `oc whoami` returns a username with no error
+* [ ] `helm version --short` returns `v3.x.x` or later
+* [ ] `git --version` returns a version string
+* [ ] `go version` returns `go version go{go_version}` or later
+* [ ] The web console at `{console_url}` loads without a certificate error
+* [ ] All cluster operators show Available=True (see setup validation below)
+
+== Setup validation
+
+Run each block in the Showroom terminal and confirm the expected output before proceeding to module 1.
+
+=== Cluster access
+
+[source,role="execute"]
+----
+oc whoami
+----
+
+Expected: your username.
+An error here means the `oc` CLI is not authenticated.
+Run `oc login --server={api_url}` with the credentials from the workshop environment panel.
+
+[source,role="execute"]
+----
+oc get clusterversion version -o jsonpath='{.status.desired.version}{"\n"}'
+----
+
+Expected: a version string beginning with `{ocp_version}`.
+
+=== Cluster operator health
+
+[source,role="execute"]
+----
+oc get clusteroperators
+----
+
+Review the output.
+Every operator should show `True` under AVAILABLE, `False` under PROGRESSING, and `False` under DEGRADED.
+Any operator that does not match this pattern needs to recover before you start module 1.
+Wait up to 5 minutes for transient states to clear, then recheck.
+
+=== Tools
+
+[source,role="execute"]
+----
+helm version --short
+----
+
+Expected: `v3.x.x+gxxxxxxx`. A `command not found` error means Helm is not in `PATH`.
+
+[source,role="execute"]
+----
+git --version
+----
+
+Expected: `git version 2.x.x` or later.
+
+[source,role="execute"]
+----
+go version
+----
+
+Expected: `go version go{go_version}.x linux/amd64` or similar.
+This is required for module 7.
+If it is missing, the integration test step in module 7 will fail.
+
+== Troubleshooting setup issues
+
+=== `oc` authentication error
+
+If `oc whoami` returns `Error from server (Forbidden)` or a connection refused error:
+
+[source,role="execute",subs="attributes"]
+----
+oc login --server={api_url}
+----
+
+Use the credentials provided by the workshop environment.
+
+=== `helm: command not found`
+
+Check whether Helm is present but not in `PATH`:
+
+[source,role="execute"]
+----
+which helm || ls /usr/local/bin/helm 2>/dev/null || echo "helm not found"
+----
+
+If Helm is present but not in `PATH`, add its directory to `PATH` in your shell configuration or use the absolute path for the bootstrap commands in module 1.
+
+=== Degraded cluster operator
+
+ACM and GitOps depend on several underlying platform operators.
+A degraded operator can block module 1 if it prevents operator installation.
+
+[source,role="execute"]
+----
+oc get clusteroperators
+----
+
+Wait up to 5 minutes.
+Transient states caused by a recent node restart or certificate rotation usually clear on their own.
+If an operator stays degraded, contact your instructor before proceeding.

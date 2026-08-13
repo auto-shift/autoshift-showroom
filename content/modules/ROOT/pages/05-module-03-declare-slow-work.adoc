@@ -1,0 +1,452 @@
+= Declare the slow work
+include::partial$_attributes.adoc[]
+:navtitle: Module 3: Declare the slow work
+
+Module 2 ended with `local-cluster` assigned to the `hub` clusterset and the full label flow running. Everything you have done so far completes in seconds.
+
+Two things in this lab do not. Building a registry on the lab cluster takes around 40 minutes, and provisioning an OpenShift cluster on Amazon Web Services (AWS) takes around 40 more. Run them one after another and you spend most of the workshop watching progress indicators.
+
+You do not have to. Both are declarative: you write labels and values files, and the machinery converges on its own. So declare both now, then spend the next several modules doing useful work while they build. Module 10 returns to collect the results.
+
+That is not a scheduling trick. It is the argument for declarative fleet management stated as a workflow. You describe the end state, the controllers reconcile toward it, and your attention is free in the meantime. A fleet operator does not sit and watch 200 clusters converge.
+
+[WARNING]
+====
+*This module starts work that costs real resources.*
+
+*The registry.* OpenShift Data Foundation (ODF) Multi-Cloud Gateway (MCG) in standalone mode plus Red Hat Quay run on the lab cluster and need genuine compute headroom. If your cluster cannot take it, skip Exercise 1 and use the fallback path documented in Module 8.
+
+*The cluster.* Hive provisions a real OpenShift cluster on AWS: Elastic Compute Cloud (EC2) instances, a Virtual Private Cloud (VPC), NAT gateways, Elastic IPs, and Route 53 records. The lab environment supplies a sandbox AWS account, so you are not spending your own money, but the resources are real.
+
+*Teardown is mandatory.* Module 10 tears the cluster down. It is not optional. If you skip it, billing continues.
+====
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Declare a container registry and an entire OpenShift cluster using nothing but labels and values files
+* Build the single source secret that cluster-install reads for AWS credentials, SSH keys, and the pull secret
+* Explain why enabling Federal Information Processing Standards (FIPS) mode constrains which SSH key algorithm you may use
+
+== What you are starting
+
+[mermaid]
+....
+flowchart TD
+  A["Module 3<br/>declare both"] --> B["ODF MCG + Quay<br/>building on the lab cluster"]
+  A --> C["Hive provisioning<br/>a cluster on AWS"]
+  B --> D["Modules 4 to 9<br/>label flow, config, operations,<br/>authoring, OCI, fleet"]
+  C --> D
+  D --> E["Module 8<br/>registry is ready to publish to"]
+  D --> F["Module 10<br/>cluster has joined the fleet"]
+....
+
+The 2 provisions do not compete. Hive runs the install on AWS and only keeps a lightweight provision pod on the hub. The registry build runs entirely on the lab cluster.
+
+== Exercise 1: Declare the registry
+
+Module 8 publishes AutoShift to an Open Container Initiative (OCI) registry. It needs a registry to publish to, and AutoShift can install one.
+
+Quay needs object storage. Rather than a full ODF deployment with Ceph and dedicated storage nodes, `odf-multi-cloud-gateway: standalone` brings up NooBaa alone. That is what makes a registry viable on a single lab cluster: the shipped `QuayRegistry` sets `objectstorage: managed: true`, and NooBaa satisfies it.
+
+. Append the registry labels to `hub-minimal.yaml`. The 6-space indentation places them inside the `hubClusterSets.hub.labels` block, the same as every label you have added so far:
++
+[source,role="execute"]
+----
+cat >> autoshift/values/clustersets/hub-minimal.yaml << 'EOF'
+
+      ### OpenShift Data Foundation, NooBaa only
+      odf: 'true'
+      odf-subscription-name: odf-operator
+      odf-channel: stable-4.22
+      odf-source: redhat-operators
+      odf-source-namespace: openshift-marketplace
+      odf-multi-cloud-gateway: standalone
+
+      ### Quay
+      quay: 'true'
+      quay-subscription-name: quay-operator
+      quay-channel: stable-3.18
+      quay-source: redhat-operators
+      quay-source-namespace: openshift-marketplace
+
+      ### Trust the cluster ingress CA in the ArgoCD repo server.
+      ### Module 8 needs this to push charts to the in-cluster registry.
+      gitops-cluster-ca-bundle: 'true'
+EOF
+----
+
+. Apply. This is the same command you have run in every module:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. Confirm the labels reached `local-cluster`. Run this until both appear:
++
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o json | grep -E '"autoshift\.io/(odf|quay)"'
+----
++
+----
+            "autoshift.io/odf": "true",
+            "autoshift.io/quay": "true",
+----
+
+=== Verify
+
+The ODF and Quay policies are now dispatched. They will take around 40 minutes to reach Compliant, and you are not going to wait for them:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy -n {policy_namespace} | grep -E 'odf|quay'
+----
+
+Compliance state will be blank or `NonCompliant` at this point. That is expected and correct: the operators are still installing. Module 8 checks them again, by which time they will be ready.
+
+== How cluster-install works for AWS
+
+The cluster-install policy set is a chain. Each policy depends on the previous one being Compliant before it fires:
+
+[mermaid]
+....
+flowchart TD
+  A["policy-cluster-install-prereqs<br/>Creates cluster namespace,<br/>ClusterImageSet, KlusterletAddonConfig"]
+  B["policy-cluster-install-secrets<br/>Copies pull secret and SSH keys<br/>into the cluster namespace"]
+  C["policy-cluster-install-aws<br/>Creates Secrets, ClusterDeployment,<br/>MachinePool, ManagedCluster"]
+  A --> B --> C
+....
+
+All 3 policies read the same `rendered-config` ConfigMap that the `cluster-config-maps` policy built from your values file. Adding a cluster values file is the entire provisioning trigger. No Helm re-rendering and no ArgoCD sync is needed beyond what ArgoCD does automatically.
+
+The policy set reads credentials from a single source secret named `aws-creds` in the `cluster-install-secrets` namespace. That secret holds 5 keys: `aws_access_key_id`, `aws_secret_access_key`, `ssh-privatekey`, `ssh-publickey`, and `pullSecret`. The values file references the same secret 4 separate times through `credentialRef`, `sshPrivateKeyRef`, `sshKeyRef`, and `pullSecretRef`. This shape matches what the ACM console produces, so a secret created by the console works here without modification.
+
+== Exercise 2: Build the source secret
+
+=== SSH key generation
+
+The values file sets `fips: true` in the `aws:` block. FIPS mode constrains which SSH key algorithms the OpenShift installer will accept. Only Rivest-Shamir-Adleman (RSA) and Elliptic Curve Digital Signature Algorithm (ECDSA) are allowed. Ed25519 is not.
+
+This is not an AutoShift constraint. It is the same restriction the OpenShift installation documentation states for FIPS clusters. If you generate an ed25519 key and then provision a FIPS cluster, the install fails during bootstrap validation. The error is not obvious: Hive retries, the provision pod exits, and the failure message does not name the key algorithm directly. Generate the key deliberately rather than reaching for the ed25519 default.
+
+Run this to generate an ECDSA key with a 521-bit curve and no passphrase:
+
+[source,role="execute"]
+----
+ssh-keygen -t ecdsa -b 521 -N '' -f ~/.ssh/ocp-cluster
+----
+
+The flags: `-t ecdsa` selects the algorithm. `-b 521` selects the strongest standard ECDSA curve. `-N ''` sets an empty passphrase, which is required for unattended Hive provisioning. `-f ~/.ssh/ocp-cluster` writes `ocp-cluster` (private key) and `ocp-cluster.pub` (public key) into your `.ssh` directory.
+
+=== Extract the pull secret from the hub
+
+The hub cluster has a valid pull secret stored in `openshift-config`. Extract it rather than downloading a new one from the Red Hat console.
+
+[source,role="execute"]
+----
+oc extract secret/pull-secret -n openshift-config --to=/tmp --confirm
+----
+
+The `--confirm` flag overwrites any existing file at the destination. The command writes `/tmp/.dockerconfigjson`.
+
+=== Create the namespace and the secret
+
+Create the source namespace:
+
+[source,role="execute"]
+----
+oc create namespace cluster-install-secrets
+----
+
+Now create the secret. The AWS credentials come from lab environment attributes, so you do not type any keys. The SSH keys come from the files you just generated.
+
+[source,role="execute",subs="attributes"]
+----
+oc create secret generic aws-creds \
+  -n cluster-install-secrets \
+  --from-literal=aws_access_key_id={aws_access_key_id} \
+  --from-literal=aws_secret_access_key={aws_secret_access_key} \
+  --from-file=ssh-privatekey=$HOME/.ssh/ocp-cluster \
+  --from-file=ssh-publickey=$HOME/.ssh/ocp-cluster.pub \
+  --from-file=pullSecret=/tmp/.dockerconfigjson
+----
+
+Note the `subs="attributes"` on this block. AsciiDoc does not expand attribute references inside delimited code blocks by default. The `subs="attributes"` directive expands `\{aws_access_key_id}` and `\{aws_secret_access_key}` to the values injected by the lab environment, so you never type a key. Shell variables like `$HOME` are unaffected by that substitution and are resolved by your shell at runtime, which is why both can appear in the same command.
+
+=== Verify
+
+Confirm the secret has all 5 keys. `oc describe` prints key names and byte counts and never prints values, which is what you want when checking a secret:
+
+[source,role="execute"]
+----
+oc describe secret aws-creds -n cluster-install-secrets
+----
+
+----
+Name:         aws-creds
+Namespace:    cluster-install-secrets
+Type:         Opaque
+
+Data
+====
+aws_access_key_id:      20 bytes
+aws_secret_access_key:  40 bytes
+pullSecret:             2847 bytes
+ssh-privatekey:         736 bytes
+ssh-publickey:          283 bytes
+----
+
+All 5 keys are present, and the byte counts confirm each one carries content. The policy chain can read each of them.
+
+[NOTE]
+====
+Byte counts on your cluster will differ. What matters is that all 5 keys exist and none is 0 bytes.
+
+Resist the habit of running `oc get secret ... -o yaml` here. That prints the base64 values, which for this secret means your AWS credentials and a private key land in your terminal scrollback. `oc describe` gives you everything you need to verify without that.
+====
+
+== Exercise 3: Declare the cluster
+
+=== Enable cluster-install on the hub
+
+The `hub-minimal.yaml` clusterset has no `cluster-install` label. Add it using the same append pattern you used in earlier modules. Open `autoshift/values/clustersets/hub-minimal.yaml` and add the 2 labels under `hubClusterSets.hub.labels`:
+
+[source,yaml]
+----
+hubClusterSets:
+  hub:
+    labels:
+      # ... existing labels ...
+      cluster-install: 'true'
+      acm-enable-provisioning: 'true'
+----
+
+The `cluster-install: 'true'` label does 2 things: it enables the SiteConfig component on the MultiClusterHub, and it gates the cluster-install policy placement so those policies only run on hubs that carry the label. The `acm-enable-provisioning: 'true'` label enables the provisioning infrastructure ACM needs to track Hive ClusterDeployments.
+
+Apply the change:
+
+[source,role="execute"]
+----
+helm upgrade autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml
+----
+
+=== Create a clusterset for the new cluster to join
+
+A cluster that joins a clusterset inherits that clusterset's labels, and therefore its policies. So the clusterset you assign the spoke to decides what it becomes.
+
+AutoShift ships a full `managed.yaml` profile, but it enables a large set of operators. Build a minimal one instead, the same way `hub-minimal.yaml` is a minimal hub. Note `self-managed: 'false'`: this is a spoke, not a hub that manages itself.
+
+Include Node Feature Discovery. You are declaring it here, on a cluster that does not exist yet, and never touching that cluster again. Module 10 checks whether it arrived.
+
+. Create the minimal managed clusterset:
++
+[source,role="execute",subs="attributes"]
+----
+cat > autoshift/values/clustersets/managed-minimal.yaml << 'EOF'
+# Minimal managed (spoke) clusterset for the lab.
+# A cluster assigned to this clusterset inherits these labels.
+managedClusterSets:
+  managed:
+    labels:
+      openshift-version: '{ocp_version}'
+      self-managed: 'false'
+
+      ### Node Feature Discovery, declared for a cluster that does not exist yet
+      node-feature-discovery: 'true'
+      node-feature-discovery-subscription-name: nfd
+      node-feature-discovery-channel: {nfd_channel}
+      node-feature-discovery-source: redhat-operators
+      node-feature-discovery-source-namespace: openshift-marketplace
+EOF
+----
+
+. Confirm the file is valid YAML and reads as you expect:
++
+[source,role="execute"]
+----
+cat autoshift/values/clustersets/managed-minimal.yaml
+----
+
+=== Create the cluster values file
+
+Copy the example file and name it after your cluster:
+
+[source,role="execute"]
+----
+cp autoshift/values/clusters/_example-cluster-install-aws.yaml \
+   autoshift/values/clusters/spoke-aws-1.yaml
+----
+
+Edit `autoshift/values/clusters/spoke-aws-1.yaml` to the following minimal working configuration. Each field is explained below.
+
+[source,yaml,subs="attributes"]
+----
+clusters:
+  spoke-aws-1:
+    config:
+      clusterSet: managed
+
+      networking:
+        clusterNetwork:
+          cidr: 10.128.0.0/14
+          hostPrefix: 23
+        machineNetwork:
+          cidr: 10.0.0.0/16
+        serviceNetwork:
+          - 172.30.0.0/16
+
+      clusterInstall:
+        createCluster: 'true'
+        platform: aws
+        baseDomain: {aws_base_domain}
+        openshiftVersion: '{ocp_version}'
+        openshiftChannel: stable
+
+        pullSecretRef:
+          name: 'aws-creds'
+          key: 'pullSecret'
+          namespace: 'cluster-install-secrets'
+        secretSourceNamespace: 'cluster-install-secrets'
+
+      aws:
+        region: {aws_region}
+        credentialRef: 'aws-creds'
+        sshPrivateKeyRef: 'aws-creds'
+        sshKeyRef:
+          name: 'aws-creds'
+          key: 'ssh-publickey'
+          namespace: 'cluster-install-secrets'
+        fips: true
+        networkType: OVNKubernetes
+
+        controlPlane:
+          instanceType: m5.xlarge
+          rootVolume:
+            iops: 4000
+            size: 100
+            type: io1
+
+        workers:
+          replicas: 3
+          instanceType: m5.xlarge
+          rootVolume:
+            iops: 2000
+            size: 100
+            type: io1
+----
+
+Field-by-field explanation:
+
+`config.clusterSet: managed` is the most important line in this file. It is the only line that decides what kind of cluster `spoke-aws-1` will become. When this cluster joins the fleet as a `ManagedCluster`, the `cluster-set-assignment` policy stamps `cluster.open-cluster-management.io/clusterset=managed` onto it. The `cluster-labels` policy reads the `cluster-set.managed` ConfigMap and stamps every label defined in the `managed` clusterset's values file. Every Placement predicate that targets the `managed` clusterset matches this cluster. Everything Module 2 taught about the label flow applies to a cluster that does not exist yet.
+
+`clusterInstall.createCluster: 'true'` is the provisioning trigger. Setting it to anything other than `'true'`, or removing it entirely, stops provisioning for that cluster.
+
+`platform: aws` routes the install to the `policy-cluster-install-aws` policy chain, which creates a Hive `ClusterDeployment` rather than a SiteConfig `ClusterInstance`.
+
+`openshiftVersion` sets the release the cluster installs at. It feeds the `ClusterImageSet` lookup. The value above comes from the `{ocp_version}` attribute defined in `_attributes.adoc`.
+
+`pullSecretRef` uses the object form rather than a plain string name because the `aws-creds` secret stores the pull secret under the custom key `pullSecret`, not the default `.dockerconfigjson`. The policy reads the key by name via a hub template lookup.
+
+`secretSourceNamespace: 'cluster-install-secrets'` tells the secrets policy where to find the source namespace on the hub. All 3 `*Ref` fields under `aws:` resolve from this namespace.
+
+`aws.credentialRef: 'aws-creds'` points to the `aws_access_key_id` and `aws_secret_access_key` keys. Hive needs these to call AWS Identity and Access Management (IAM) APIs.
+
+`aws.sshPrivateKeyRef: 'aws-creds'` points to the `ssh-privatekey` key. Hive embeds the private key in the `ClusterDeployment` so it can reach bootstrapped nodes.
+
+`aws.sshKeyRef` reads `ssh-publickey` from the same secret. The public key goes into the install-config so nodes accept SSH connections from the installer.
+
+`aws.fips: true` sets FIPS mode on the cluster. This is why you generated an ECDSA key rather than an ed25519 key.
+
+The `controlPlane` and `workers` blocks set EC2 instance types and root volume sizes. These are the defaults from the example file.
+
+=== Apply with the cluster values file
+
+Add both new files as additional `-f` arguments: the managed clusterset the spoke will join, and the cluster itself. Most general file first, as always with Helm:
+
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
+----
+
+[IMPORTANT]
+====
+From here on, every `helm upgrade` must include all 4 values files.
+
+Helm renders from exactly the files you pass. Drop `managed-minimal.yaml` or `spoke-aws-1.yaml` from a later command and AutoShift renders as though you never declared them, which removes the clusterset and tells cluster-install to deprovision the cluster you just asked for.
+
+The remaining modules show the shorter 2-file command, because each was written to stand alone. Keep appending your 2 extra `-f` arguments to every one of them.
+====
+
+ArgoCD reconciles the change. The `cluster-config-maps` policy creates the `spoke-aws-1.rendered-config` ConfigMap on the hub. The cluster-install policy chain begins.
+
+=== Verify
+
+Confirm the rendered-config ConfigMap was created for your cluster:
+
+[source,role="execute",subs="attributes"]
+----
+oc get configmap -n {policy_namespace} | grep spoke-aws-1
+----
+
+----
+spoke-aws-1.rendered-config   1      30s
+----
+
+The `cluster-config-maps` policy built this ConfigMap from your values file. The cluster-install policy chain reads it to generate every provisioning resource.
+
+Confirm the `ClusterDeployment` appeared:
+
+[source,role="execute"]
+----
+oc get clusterdeployment -n spoke-aws-1
+----
+
+----
+NAME          PLATFORM   REGION      INSTALLED   AGE
+spoke-aws-1   aws        us-east-1   false       2m
+----
+
+`INSTALLED: false` is expected. Hive is provisioning.
+
+
+== Both provisions are now running
+
+Nothing else in this module needs your attention. The registry is building on the lab cluster and Hive is provisioning a cluster on AWS, and neither needs you.
+
+Go on to Module 4. By the time you reach Module 8 the registry will be ready to publish to, and by Module 10 the spoke cluster will have joined the fleet.
+
+If you want to glance at progress between modules, these are the 2 commands. Neither is a step you need to complete:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy -n {policy_namespace} | grep -E 'odf|quay'
+oc get clusterdeployment -A
+----
+
+== Learning Outcomes
+
+By completing this module, you should now understand:
+
+* ✓ A registry and an entire OpenShift cluster are both declared the same way everything else in AutoShift is declared: labels in a values file, and a controller that reconciles toward them
+* ✓ `odf-multi-cloud-gateway: standalone` brings up NooBaa without Ceph or dedicated storage nodes, which is what makes an in-cluster registry viable on a single lab cluster
+* ✓ Enabling FIPS mode constrains the SSH key algorithm to ECDSA or RSA, because ed25519 is not FIPS-approved, and the resulting install failure is not obvious from the error
+* ✓ The clusterset a cluster is assigned to determines everything it inherits, and that assignment can be declared before the cluster exists
+* ✓ Declarative infrastructure means you describe the end state and reclaim your attention while controllers converge, which is why these 2 provisions run while you work through the next 6 modules
+
+[.solve-button-placeholder]#solve-button-placeholder#
+
+[.validate-button-placeholder]#validate-button-placeholder#

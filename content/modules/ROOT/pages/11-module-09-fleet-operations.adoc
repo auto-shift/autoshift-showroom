@@ -1,0 +1,280 @@
+= Fleet operations capstone
+include::partial$_attributes.adoc[]
+:navtitle: Module 9: Fleet operations capstone
+
+Module 8 covered the build and distribution boundary: how PolicyGenerator directories become Helm charts, how those charts reach an OCI registry, and how 2 labels flip an entire fleet to mirrored catalog sources. This module closes the lab by looking at 4 fleet operations that appear distinct. Each one reduces to the same primitive: a cluster moves from 1 clusterset to another.
+
+[NOTE]
+====
+This lab runs on a single hub cluster. Most of this module is conceptual. Sections that have commands you can run on the lab cluster are marked *Try it on the lab cluster*. Everything else describes how the mechanism works on a real multi-cluster fleet.
+====
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Explain how gradual rollout, declarative cluster assignment, OpenShift cluster upgrades, and hub-of-hubs topology all reduce to clusterset membership
+* Describe how to roll a change out gradually and roll it back with `git revert`
+* State the single Red Hat Advanced Cluster Management (ACM) constraint that explains hub-of-hubs topology
+
+== The common primitive
+
+Every policy in AutoShift targets a `ManagedClusterSet` through a Placement predicate. A cluster receives a policy when it is a member of that clusterset. Moving a cluster into a clusterset adds the policy. Moving it out removes the policy.
+
+4 fleet operations all use this same lever:
+
+. *Gradual rollout:* move clusters between versioned clustersets 1 wave at a time
+. *Declarative cluster assignment:* commit a values file change and the policy stamps the clusterset label
+. *OpenShift cluster upgrades:* the upgrade policy targets a clusterset; waves are controlled clusterset migrations
+. *Hub-of-hubs topology:* each ACM tier owns a distinct set of clustersets, shaped by a single hard constraint
+
+== Gradual rollout
+
+Two AutoShift releases run side by side. Each owns a separate clusterset, named with a version suffix. You migrate clusters from 1 clusterset to the other in controlled waves.
+
+Setting `versionedClusterSets: true` in the AutoShift Application tells it to append the version string to every clusterset name. In OCI mode, `autoshiftOciVersion: "0.0.1"` turns the `hub` clusterset into `hub-0-0-1`. A second Application with `autoshiftOciVersion: "0.0.2"` creates `hub-0-0-2`. The 2 releases run independently with no shared clustersets.
+
+The version string is sanitized for DNS compatibility: dots and slashes become dashes, and the result is lowercased. `0.0.1` becomes `-0-0-1`. `feature/new-policy` becomes `-feature-new-policy`.
+
+The ArgoCD Application name must be 11 characters or fewer. The policy namespace is derived from it (`policies-{Release.Name}`), and the naming validator enforces a 20-character ceiling on the namespace. `autoshift-0-0-1` produces a 24-character namespace and fails at render time. Use short names such as `as-0-0-1` and `as-0-0-2`. The version suffix in the clusterset name comes from `autoshiftOciVersion`, not from the Application name, so the 2 values do not have to match.
+
+A wave migration on a real fleet looks like:
+
+. Deploy `as-0-0-2` with `versionedClusterSets: true` and `autoshiftOciVersion: "0.0.2"`. The clusterset `hub-0-0-2` starts empty.
+. Move a canary cluster into `hub-0-0-2`. Policy compliance on `policies-as-0-0-2` tells you whether the new version is healthy on that cluster.
+. Move the next wave after the canary is stable. Repeat until the fleet is migrated.
+. Decommission `as-0-0-1` after confirming no clusters remain in `hub-0-0-1`.
+
+The old deployment stays running throughout. Because it owns a separate clusterset, there is no overlap and no conflict.
+
+=== Try it on the lab cluster
+
+Check the current clustersets on the lab cluster:
+
+[source,role="execute"]
+----
+oc get managedclusterset
+----
+
+----
+NAME            AGE
+hub             ...
+local-cluster   ...
+----
+
+The `hub` clusterset was created by the `policy-foundation` chart in Module 1. In a real gradual rollout you would see `hub-0-0-1` and `hub-0-0-2` alongside each other, each owned by a separate AutoShift Application with its own policy namespace.
+
+=== Verify
+
+Confirm `local-cluster` is a member of the `hub` clusterset:
+
+[source,role="execute"]
+----
+oc get managedcluster local-cluster \
+  -o jsonpath='{.metadata.labels.cluster\.open-cluster-management\.io/clusterset}{"\n"}'
+----
+
+----
+hub
+----
+
+This is the clusterset label that the `cluster-labels` policy stamped in Module 2. On a real fleet, moving this cluster to `hub-0-0-2` would be a single commit changing `config.versionTag` in the cluster's values file.
+
+== Declarative clusterset assignment
+
+In Module 2 you ran `oc label managedcluster local-cluster cluster.open-cluster-management.io/clusterset=hub --overwrite` by hand. That was the right place to start: you saw exactly what changed and why. On a real fleet, the `cluster-set-assignment` policy does the same job from git.
+
+Each cluster has an entry in `autoshift/values/clusters/<name>.yaml`. Set `config.clusterSet` and `config.versionTag` there:
+
+[source,yaml]
+----
+clusters:
+  spoke-cluster-1:
+    config:
+      clusterSet: 'managed'
+      versionTag: '0.0.2'
+----
+
+The `cluster-set-assignment` policy reads these fields and stamps `cluster.open-cluster-management.io/clusterset=managed-0-0-2` onto the `ManagedCluster` object. The sanitization rule is the same as for `versionedClusterSets`: `0.0.2` becomes `-0-0-2`.
+
+If you omit `versionTag`, the target clusterset is `<clusterSet><this deployment's own cluster set suffix>`. If you omit `clusterSet` entirely, the policy does nothing and clusterset membership remains manually controlled.
+
+2 properties make this the preferred approach over `oc label` on a real fleet:
+
+*Owner-guarded.* The policy only stamps a cluster that has no `autoshift.io/owning-namespace` label, or that is already owned by this deployment. 2 releases cannot fight over a cluster. A cluster owned by `as-0-0-1` will not be touched by `as-0-0-2`. Ownership transfers when the current owner stamps the new clusterset label. The `cluster-labels` policy then re-stamps `owning-namespace` to whichever deployment owns the destination clusterset.
+
+*Git revert is the rollback.* Each wave is a commit that bumps `versionTag` for N clusters. ArgoCD reconciles it. To roll back, run `git revert <wave-commit>`. The policy re-stamps the old clusterset and the cluster returns to the previous release. No manual remediation is needed.
+
+One constraint: `versionTag` must be in a values file that both releases read. If `as-0-0-1` sees `versionTag: '0.0.1'` and `as-0-0-2` sees `versionTag: '0.0.2'` for the same cluster, they stamp conflicting clusterset labels and the cluster flaps. Put per-cluster `clusterSet` and `versionTag` in a shared values file that both ArgoCD Applications include via `valueFiles`.
+
+Note that `oc label` is not a durable override for a cluster under `cluster-set-assignment`. The policy re-stamps the clusterset label at the next reconcile. Move clusters in git, not imperatively.
+
+== OpenShift cluster upgrades
+
+The `openshift-upgrade` policy set is 4 policies sharing 1 placement. All 4 are gated on `autoshift.io/openshift-upgrade: 'true'`. They run as a staged sequence:
+
+[cols="1,1,3",options="header"]
+|===
+|Policy |Mode |Role
+
+|`policy-openshift-upgrade-channel`
+|enforce
+|Sets the `ClusterVersion` channel first so `availableUpdates` recomputes for the target channel
+
+|`policy-openshift-upgrade-allowed`
+|inform
+|Asserts the target version is a valid, available update. Policy 3 depends on this policy. A typo'd version surfaces as NonCompliant here and blocks the enforce policy from firing
+
+|`policy-openshift-upgrade`
+|enforce
+|Sets `upstream` and `desiredUpdate.version` on `ClusterVersion`. The Cluster Version Operator (CVO) performs the upgrade
+
+|`policy-openshift-upgrade-status`
+|inform
+|Compliant only when the cluster has reached the target version. This is the completion gate. Watch this one, not policy 3
+|===
+
+2 guards prevent unsafe behavior:
+
+*Semver guard.* Policy 3 asserts `desiredUpdate` only when `target > current`. A cluster already at or above the target version is a Compliant no-op. The CVO is never asked to downgrade, and clusters that are already Progressing through an upgrade are not interrupted.
+
+*Dependency gate.* Policy 3 declares a dependency on Policy 2. An invalid or unavailable `openshift-version` surfaces as NonCompliant on Policy 2, and Policy 3 simply never fires. The fleet never partially applies a bad upgrade target.
+
+[WARNING]
+====
+Never enable `openshift-upgrade` on an already-populated clusterset. ACM fans the policy out to every member cluster at once. Every opted-in cluster would start upgrading simultaneously. Always start with an empty clusterset and move clusters into it in controlled waves.
+====
+
+ArgoCD health doubles as the fleet compliance signal. OpenShift GitOps ships a health check for `Policy` objects. The `autoshift-openshift-upgrade` ArgoCD Application is Healthy only when all 4 policies are Compliant. Because Policy 4 (the completion gate) is included, the Application reaches Healthy only when the upgrade has actually finished. Expect it to sit Degraded for the full duration of an upgrade. That is the gate working, not a fault.
+
+The labels that enable and configure the upgrade policy, set under `hubClusterSets.<name>.labels:` in the target clusterset's values file:
+
+[source,yaml]
+----
+      openshift-upgrade: 'true'
+      openshift-version: '4.22.8'
+      openshift-upgrade-channel: 'stable-4.22'
+----
+
+The `openshift-upgrade-upstream` label is optional. It overrides the default OpenShift Update Service (OSUS) graph URL, which is needed in disconnected environments that run a local OSUS instance.
+
+The wave model integrates directly with the gradual rollout mechanism. Create a new versioned clusterset with the target `openshift-version`. Start it empty. Move a canary cluster. Verify the completion gate. Commit the next wave. The compliance query for a wave (run this on a real fleet where the upgrade policy is deployed):
+
+----
+oc get policy -n policies-autoshift policy-openshift-upgrade-status \
+  -o jsonpath='{range .status.status[*]}{.clustername}{"\t"}{.compliant}{"\n"}{end}'
+----
+
+=== Try it on the lab cluster
+
+The upgrade label is not set in the lab's `hub-minimal.yaml`. Confirm that no upgrade policies are deployed in the policy namespace:
+
+[source,role="execute"]
+----
+oc get policy -n policies-autoshift | grep openshift-upgrade
+----
+
+The output is empty. The policy only deploys when a cluster in the target clusterset carries `autoshift.io/openshift-upgrade: 'true'`. The label is the gate. Removing it (or never setting it) is sufficient to keep a cluster out of the upgrade pipeline entirely.
+
+=== Verify
+
+Confirm `local-cluster` does not carry the upgrade opt-in label:
+
+[source,role="execute"]
+----
+oc get managedcluster local-cluster \
+  -o jsonpath='{.metadata.labels.autoshift\.io/openshift-upgrade}{"\n"}'
+----
+
+The output is empty. The cluster is not opted in to upgrades.
+
+== Hub-of-hubs
+
+One rule explains the entire topology:
+
+*A cluster is managed by exactly 1 ACM.*
+
+A managed cluster runs a single klusterlet agent registered to a single hub. A spoke hub (`hub1`) imported into the hub-of-hubs (HoH) ACM has its agent registered to the HoH. `hub1` cannot register to its own ACM at the same time. So `hub1`'s own ACM manages only its spokes (`spoke1`, `spoke2`), never `hub1` itself.
+
+2 consequences follow directly from this rule:
+
+. *Anything that must land on `hub1` is deployed by the HoH AutoShift.* Only the HoH's ACM manages `hub1`. Only the HoH can place a policy onto it. `hub1`'s own AutoShift physically cannot target `hub1`.
+
+. *`hub1`'s own AutoShift is limited to 2 things:* configuring `hub1`'s spokes through policies that `hub1`'s ACM distributes to `spoke1` and `spoke2`, and producing `hub1`-local config ConfigMaps that ArgoCD syncs directly to `hub1` without ACM involvement.
+
+[mermaid]
+....
+graph TD
+  subgraph HoH["Hub-of-Hubs"]
+    HoHACM["HoH ACM<br/>manages: HoH-self, hub1"]
+    HoHAS["AutoShift #quot;autoshift#quot;<br/>ns: policies-autoshift<br/>deploys hub1 operators + day-2 config"]
+  end
+  subgraph H1["hub1 (spoke hub)"]
+    H1ACM["hub1 ACM<br/>manages: spoke1, spoke2<br/>does NOT manage hub1"]
+    H1AS["AutoShift #quot;hub1#quot;<br/>ns: policies-hub1<br/>deploys policies for spoke1 + spoke2"]
+  end
+  S1["spoke1"]
+  S2["spoke2"]
+  HoH -->|"HoH ACM manages hub1<br/>HoH AutoShift deploys hub1 policies"| H1
+  H1 -->|"hub1 ACM manages"| S1
+  H1 -->|"hub1 ACM manages"| S2
+....
+
+The HoH values file includes both a clusterset for the HoH itself (with `self-managed: 'true'`) and entries for each spoke hub (with `self-managed: 'false'`). The `self-managed: 'false'` entries drive operator installation, day-2 configuration, and upgrades of hub1. Feature labels in `hub1.yaml`, when read by the HoH AutoShift, cause the HoH to place those policies onto hub1. Placing the same label in hub1's own AutoShift instance has no effect on hub1 itself.
+
+The HoH cannot see `spoke1` or `spoke2`. They are 2 ACM boundaries away. Configure leaf spokes through hub1's own AutoShift instance, not through the HoH.
+
+=== Cross-namespace lookups
+
+The `cluster-labels` and `cluster-install` policies that execute on hub1 are authored and deployed by the HoH AutoShift. To do their job they must read the config ConfigMaps that hub1's AutoShift produced (`cluster-set.*`, `managed-cluster.*`). But the HoH has no way to know which namespace hub1's AutoShift uses. Each instance picks its own namespace independently.
+
+So those policies never hard-code a namespace. They do a cluster-wide lookup filtered by a well-known label:
+
+----
+# cluster-labels reads these (by label, any namespace)
+lookup "v1" "ConfigMap" "" "" "autoshift.io/cluster-labels"
+
+# cluster-install reads these (by label, any namespace)
+lookup "v1" "ConfigMap" "" "" "autoshift.io/rendered-config-map"
+----
+
+hub1's AutoShift syncs those ConfigMaps into `policies-hub1`. The HoH-deployed policy finds them without knowing the namespace. This is a deliberate design choice: a policy authored on one hub must be able to consume config produced by an independent AutoShift instance on another. Do not change these lookups to be namespace-scoped.
+
+=== Standing up a hub-of-hubs
+
+Tier 1 and tier 2 are 2 separate AutoShift bootstraps. Installing ACM on hub1 via the HoH does not give hub1 an AutoShift instance. That requires an explicit second step.
+
+. Bootstrap the HoH (GitOps + ACM), then create the `autoshift` ArgoCD Application. Its values include the HoH's own clusterset and an entry for hub1 with `self-managed: 'false'`.
+. The HoH provisions and imports hub1, installs GitOps and ACM on it, and places hub1's operator and day-2 policies onto it.
+. Bootstrap AutoShift on hub1 separately: create a second ArgoCD Application named `hub1`, with its destination set to the hub1 cluster. Its policy namespace is `policies-hub1`. Its values cover hub1's spokes.
+. hub1's AutoShift syncs its config ConfigMaps via ArgoCD (no ACM involved, since hub1's ACM doesn't manage hub1). The HoH-deployed `managedHub` cluster-labels policy, executing on hub1, reads those ConfigMaps via the cross-namespace lookup and stamps labels on spoke1 and spoke2.
+
+The same 11-character Application name ceiling applies at every tier. `policies-hub1` is 13 characters and fits. `policies-autoshift` is 18 characters and fits. Both are within the 20-character ceiling.
+
+== Every operation is a label in a values file
+
+In Module 2 you traced the full chain from a values file entry to a label on a `ManagedCluster`: the values file fed a ConfigMap, the `cluster-labels` policy read the ConfigMap and stamped the label, the Placement matched the label, the PlacementDecision bound the policy, and the policy configured the cluster.
+
+Every operation in this module uses that same chain:
+
+* *Gradual rollout:* `versionedClusterSets: true` and `autoshiftOciVersion: "0.0.2"` in the Application values create the `hub-0-0-2` clusterset. Committing `config.versionTag: '0.0.2'` for a cluster in its values file causes `cluster-set-assignment` to stamp `cluster.open-cluster-management.io/clusterset=managed-0-0-2` on its `ManagedCluster` object.
+
+* *Declarative assignment:* `config.clusterSet` and `config.versionTag` in a cluster's values file feed the `cluster-set-assignment` policy, which stamps the clusterset label. That label change shifts which AutoShift deployment owns the cluster.
+
+* *OpenShift upgrades:* `openshift-upgrade: 'true'` and `openshift-version: '4.22.8'` in the clusterset values enable 4 upgrade policies on every cluster in that clusterset. Removing a cluster from that clusterset removes the policies. The wave is a series of clusterset migrations tracked as git commits.
+
+* *Hub-of-hubs:* `self-managed: 'false'` in the HoH's values file for hub1 tells the HoH AutoShift to generate the `managedHub` target of `cluster-labels` and deploy it onto hub1 via the HoH's ACM. The config ConfigMaps that hub1's own AutoShift produces are the same ConfigMap mechanism you saw in Module 2, running on a different cluster in a different namespace.
+
+You set a value in git. ArgoCD reconciles it. A ConfigMap changes. A label changes. A placement matches. A policy fires. At every scale from a single self-managed hub to a 3-tier hub-of-hubs fleet, that is AutoShift.
+
+== Learning Outcomes
+
+By completing this module, you should now understand:
+
+* ✓ Gradual rollout, declarative cluster assignment, OpenShift upgrades, and hub-of-hubs topology all reduce to clusterset membership. Moving a cluster into or out of a clusterset is the single mechanism that activates, migrates, and decommissions fleet-wide operations
+* ✓ A declarative rollout is a series of commits on `config.versionTag` in a cluster's values file. The `cluster-set-assignment` policy is owner-guarded and stamps the clusterset label. `git revert` is the rollback because each wave is a commit
+* ✓ The single ACM constraint (a cluster is managed by exactly 1 ACM) determines why a spoke hub cannot configure itself, why its configuration must come from the hub above it, and why the policies that execute on a spoke hub use cluster-wide label-selected lookups instead of namespace-scoped ones
+
+[.solve-button-placeholder]#solve-button-placeholder#
+
+[.validate-button-placeholder]#validate-button-placeholder#

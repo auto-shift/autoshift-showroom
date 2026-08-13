@@ -1,0 +1,400 @@
+= Config blocks and per-cluster overrides
+include::partial$_attributes.adoc[]
+:navtitle: Module 5: Config blocks and overrides
+
+Module 4 ended with Node Feature Discovery disabled and every policy in `hub-minimal.yaml` Compliant. Each step in that module used only labels: an on/off flag and 4 Operator Lifecycle Manager (OLM) coordinate labels that told Red Hat Advanced Cluster Management (ACM) which operator to install.
+
+Not all configuration fits in a label. This module introduces the second form: the `config:` block. User Workload Monitoring (UWM) is the worked example because it has both forms in the reference catalog. You add a minimal config block to `hub-minimal.yaml`, apply it, and read the result out of the `local-cluster.rendered-config` ConfigMap on the hub. Then you create a per-cluster values file that overrides 1 field and confirm which value the merge uses.
+
+[mermaid]
+....
+flowchart TD
+  A["hub-minimal.yaml<br/>labels: uwm: 'true'<br/>config.uwm.*"] -->|"helm upgrade"| B["cluster-set.hub<br/>ConfigMap (labels)"]
+  A -->|"helm upgrade"| C["cluster-set-config.hub<br/>ConfigMap (config)"]
+  B -->|"cluster-labels policy"| D["local-cluster<br/>autoshift.io/uwm: 'true'"]
+  C -->|"policy-cluster-configs"| E["local-cluster.rendered-config"]
+  D -->|"Placement predicate<br/>In ['true']"| F["policy-uwm-enable<br/>dispatched"]
+  E -->|"hub template lookup"| F
+....
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Explain when configuration belongs in a label and when it belongs in a `config:` block
+* Add a `config:` block to a clusterset values file and read the rendered result back off the hub
+* Override a clusterset value for a single cluster and prove which value wins
+
+== Exercise 1: Why 2 configuration forms exist
+
+The 5-label operator contract carries scalar inputs: a package name, a channel, a catalog source, a namespace. Those map directly to fields on an OLM Subscription, and ACM's OperatorPolicy reads them from `ManagedCluster` labels. A label value is a string. That is enough for an on/off flag or a channel name.
+
+UWM differs in 2 ways. First, UWM is not an OLM operator. It is a built-in OpenShift feature enabled by writing to a ConfigMap in the `openshift-monitoring` namespace. There is no Subscription, channel, or catalog source. The only label UWM needs is the placement flag `uwm: 'true'`, which the Placement predicate uses to select clusters.
+
+Second, UWM needs nested configuration: Prometheus storage, retention, resource requests and limits; Thanos Ruler retention; Alertmanager settings. You could define `uwm-prometheus-retention: '24h'` as a label, but as soon as the configuration has shape, you face a combinatorial expansion of flat labels that is impractical to maintain. More importantly, the UWM policy cannot reconstruct nested YAML structure from a set of individual label values. A hub template can call `lookup` to read a ConfigMap and get back a map; it cannot query individual `ManagedCluster` labels and assemble them into a nested dict.
+
+The `config:` block exists for this case. It lives alongside the `labels:` block in a clusterset or clusters values file. The `autoshift-cluster-config-maps` Argo CD Application renders it into a `cluster-set-config.\{clusterSetName}` ConfigMap on the hub. The `policy-cluster-configs` ACM policy reads those ConfigMaps, merges cluster-level overrides on top of clusterset defaults, and writes the result to a `\{clusterName}.rendered-config` ConfigMap. The UWM policy reads `local-cluster.rendered-config` at dispatch time using a hub template lookup.
+
+The reference catalog `_example.yaml` shows both forms side by side:
+
+[source,yaml]
+----
+# Under hubClusterSets.hub.labels:
+uwm: 'false'              # placement label: on/off flag only
+
+# Under hubClusterSets.hub.config:
+uwm:
+  storageClass: 'gp3-csi'
+  prometheus:
+    retention: '24h'
+    storage: '50Gi'
+  thanosRuler:
+    retention: '24h'
+    storage: '10Gi'
+----
+
+`hub-minimal.yaml` has only a `labels:` block. Confirm that no `config:` block exists yet:
+
+. Check the file for a config key at the right indentation:
++
+[source,role="execute"]
+----
+grep '^    config:' autoshift/values/clustersets/hub-minimal.yaml || echo "no config block found"
+----
++
+----
+no config block found
+----
+
+. Review the end of the file to see where the config block will be added:
++
+[source,role="execute"]
+----
+tail -5 autoshift/values/clustersets/hub-minimal.yaml
+----
++
+The last lines are label entries at 6-space indentation inside the `labels:` block. The `config:` block will go at 4-space indentation, the same level as `labels:`, under `hub:`. Moving from 6-space to 4-space indentation closes the `labels:` block and opens a peer key.
+
+=== Verify
+
+Confirm there is no existing config block before proceeding:
+
+[source,role="execute"]
+----
+grep '^    config:' autoshift/values/clustersets/hub-minimal.yaml || echo "no config block found"
+----
+
+----
+no config block found
+----
+
+== Exercise 2: Add a config block and read it back
+
+A single `cat >>` appends 2 things to `hub-minimal.yaml`: the `uwm: 'true'` label at 6-space indentation (inside the existing `labels:` block), and the `config:` block at 4-space indentation (which closes the labels block and opens a peer key under `hub:`).
+
+The config block uses the minimum fields the UWM policy needs to produce a complete `user-workload-monitoring-config` ConfigMap: a storage class, Prometheus retention and storage, and Thanos Ruler retention and storage. Fields left without values would produce an invalid resource quantity in the rendered ConfigMap.
+
+. Append the label and config block to `hub-minimal.yaml`:
++
+[source,role="execute"]
+----
+cat >> autoshift/values/clustersets/hub-minimal.yaml << 'EOF'
+
+      ### User Workload Monitoring
+      uwm: 'true'
+    config:
+      uwm:
+        storageClass: 'gp3-csi'
+        prometheus:
+          retention: '24h'
+          storage: '10Gi'
+        thanosRuler:
+          retention: '24h'
+          storage: '5Gi'
+EOF
+----
+
+. Confirm the append looks correct. The `config:` key must sit at 4-space indentation, the same level as `labels:`:
++
+[source,role="execute"]
+----
+tail -12 autoshift/values/clustersets/hub-minimal.yaml
+----
++
+----
+
+      ### User Workload Monitoring
+      uwm: 'true'
+    config:
+      uwm:
+        storageClass: 'gp3-csi'
+        prometheus:
+          retention: '24h'
+          storage: '10Gi'
+        thanosRuler:
+          retention: '24h'
+          storage: '5Gi'
+----
+
+. Apply the updated values file:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. `helm upgrade` updates the `autoshift-cluster-config-maps` Application. Argo CD detects the change and re-renders the `cluster-set-config.hub` ConfigMap with the UWM config block. Wait for the Application to sync:
++
+[source,role="execute"]
+----
+oc get application autoshift-cluster-config-maps -n openshift-gitops
+----
++
+----
+NAME                            SYNC STATUS   HEALTH STATUS
+autoshift-cluster-config-maps   Synced        Healthy
+----
+
+. The same `helm upgrade` also updated the `autoshift-cluster-labels` Application. Argo CD re-renders the `cluster-set.hub` ConfigMap with the `uwm: 'true'` label entry. The cluster-labels ACM policy reads the updated ConfigMap and stamps `autoshift.io/uwm: 'true'` onto `local-cluster`. Run this command until the label appears:
++
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o json | grep '"autoshift\.io/uwm'
+----
++
+----
+            "autoshift.io/uwm": "true",
+----
+
+. Read the rendered-config. The `policy-cluster-configs` policy merged the clusterset config into `local-cluster.rendered-config`. The `config` data key contains the merged YAML:
++
+[source,role="execute"]
+----
+oc get configmap local-cluster.rendered-config -n policies-autoshift \
+  -o jsonpath='{.data.config}'
+----
++
+The output shows the UWM block as YAML. Any policy that needs it reads this ConfigMap via a hub template lookup rather than reading individual labels.
+
+. The `uwm: 'true'` label is now on `local-cluster`, so the UWM Placement predicate selects it. Confirm a PlacementDecision was created:
++
+[source,role="execute",subs="attributes"]
+----
+oc get placementdecision -n {policy_namespace} \
+  -l cluster.open-cluster-management.io/placement=placement-policy-uwm-enable
+----
++
+[subs="attributes"]
+----
+NAME                                     AGE
+placement-policy-uwm-enable-decision-1   1m
+----
+
+=== Verify
+
+Confirm the `storageClass` value from the config block is present in the rendered-config, proving the config block arrived on the hub:
+
+[source,role="execute"]
+----
+oc get configmap local-cluster.rendered-config -n policies-autoshift \
+  -o jsonpath='{.data.config}' | grep storageClass
+----
+
+----
+  storageClass: gp3-csi
+----
+
+The value `gp3-csi` arrived exactly as written in `hub-minimal.yaml`.
+
+== Exercise 3: Override a value for a single cluster
+
+The `autoshift-cluster-config-maps` Application reads config from 2 sources and merges them. Clusterset config comes from `hubClusterSets.<name>.config` and lands in a `cluster-set-config.*` ConfigMap. Per-cluster config comes from `clusters.<clusterName>.config` in a clusters values file and lands in a `managed-cluster-config.*` ConfigMap. The merge fills in missing keys: cluster config fills first, then clusterset config fills any keys the cluster did not set.
+
+Precedence is: cluster beats clusterset beats chart defaults.
+
+You create a per-cluster values file for `local-cluster` that overrides only the Prometheus retention period. Every other field in the UWM config stays at the clusterset value.
+
+. Create the per-cluster values file:
++
+[source,role="execute"]
+----
+cat > autoshift/values/clusters/local-cluster.yaml << 'EOF'
+# Per-cluster overrides for local-cluster.
+# Only include values you want to change from the clusterset defaults.
+clusters:
+  local-cluster:
+    config:
+      uwm:
+        prometheus:
+          retention: '7d'
+EOF
+----
+
+. Apply the updated configuration. Include the new clusters file with an extra `-f`:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clusters/local-cluster.yaml
+----
+
+. The `autoshift-cluster-config-maps` Application now creates a `managed-cluster-config.local-cluster` ConfigMap containing only the fields you overrode. Wait for the Application to sync:
++
+[source,role="execute"]
+----
+oc get application autoshift-cluster-config-maps -n openshift-gitops
+----
++
+----
+NAME                            SYNC STATUS   HEALTH STATUS
+autoshift-cluster-config-maps   Synced        Healthy
+----
+
+. Confirm the per-cluster ConfigMap exists and contains only the overridden field. This is the cluster-level input to the merge:
++
+[source,role="execute"]
+----
+oc get configmap managed-cluster-config.local-cluster -n policies-autoshift \
+  -o jsonpath='{.data.config}'
+----
++
+----
+{"uwm":{"prometheus":{"retention":"7d"}}}
+----
+
+. Read the rendered-config. The merge ran: `prometheus.retention` from the cluster override won; `storageClass`, `prometheus.storage`, and `thanosRuler.*` came from the clusterset unchanged:
++
+[source,role="execute"]
+----
+oc get configmap local-cluster.rendered-config -n policies-autoshift \
+  -o jsonpath='{.data.config}' | grep retention
+----
++
+----
+    retention: 7d
+    retention: 24h
+----
++
+The 1st value (`7d`) is `prometheus.retention` from the cluster override. The 2nd value (`24h`) is `thanosRuler.retention` from the clusterset, because the cluster config only set `prometheus.retention`.
+
+=== Verify
+
+Confirm the cluster value won for `prometheus.retention` and the clusterset value held for `storageClass`:
+
+[source,role="execute"]
+----
+oc get configmap local-cluster.rendered-config -n policies-autoshift \
+  -o jsonpath='{.data.config}' | grep -E 'storageClass:|retention:'
+----
+
+----
+  storageClass: gp3-csi
+    retention: 7d
+    retention: 24h
+----
+
+`storageClass: gp3-csi` is unchanged and sourced from the clusterset. The first `retention: 7d` is the cluster override winning over the clusterset's `retention: 24h` for Prometheus. Thanos Ruler retention stayed at `24h` because the cluster config set only `prometheus.retention`.
+
+== Troubleshooting
+
+=== local-cluster.rendered-config does not update after helm upgrade
+
+*Issue:* `oc get configmap local-cluster.rendered-config -n policies-autoshift -o jsonpath='{.data.config}'` returns an empty result or does not show the `uwm` section after applying `hub-minimal.yaml`.
+
+*Diagnosis:* The `autoshift-cluster-config-maps` Application must sync before ACM evaluates the `policy-cluster-configs` policy. Check the Application:
+
+[source,role="execute"]
+----
+oc get application autoshift-cluster-config-maps -n openshift-gitops
+----
+
+If the Application shows `OutOfSync`, Argo CD has not yet detected the change. If it shows `Synced` but the rendered-config is still empty, check whether the policy has evaluated:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy policy-cluster-configs -n {policy_namespace}
+----
+
+Wait for `Compliant`. ACM evaluates the policy after every reconcile cycle.
+
+=== Config block present in file but missing from rendered-config
+
+*Issue:* `hub-minimal.yaml` has a `config:` block, but the rendered-config does not contain the `uwm` section.
+
+*Cause:* The `config:` key is at the wrong YAML indentation level. If it sits at 6-space indentation (inside `labels:`), YAML treats it as a label key named `config`, not as a peer of `labels:` under `hub:`. The `cluster-set-config.hub` ConfigMap ends up with an empty config.
+
+*Diagnosis:* Run `helm template` locally to see what the chart renders:
+
+[source,role="execute"]
+----
+helm template autoshift ./autoshift \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  | grep -A 5 'cluster-set-config.hub'
+----
+
+Look for `config:` in the output. If the data section shows `config: '{}'`, the block was parsed as a label. Fix the indentation so `config:` aligns with `labels:` at 4 spaces under `hub:`.
+
+=== Per-cluster override does not appear in the rendered-config
+
+*Issue:* After creating `autoshift/values/clusters/local-cluster.yaml` and re-applying, the rendered-config still shows the clusterset value for the overridden field.
+
+*Common cause 1:* The clusters file was not passed to `helm upgrade`. Every `helm upgrade` call must include all `-f` flags. Confirm the per-cluster ConfigMap exists:
+
+[source,role="execute"]
+----
+oc get configmap managed-cluster-config.local-cluster -n policies-autoshift
+----
+
+If `not found`, the file was not included. Re-run `helm upgrade` with the `-f autoshift/values/clusters/local-cluster.yaml` flag.
+
+*Common cause 2:* The cluster name key in the file does not match the ACM managed cluster name. The key under `clusters:` must exactly match the `ManagedCluster` name. Verify:
+
+[source,role="execute"]
+----
+oc get managedcluster local-cluster
+----
+
+If the cluster name differs, update the key in the clusters file to match.
+
+=== autoshift-cluster-config-maps Application shows OutOfSync or Error
+
+*Issue:* The Application does not reach `Synced` after `helm upgrade`.
+
+*Diagnosis:*
+
+[source,role="execute"]
+----
+oc describe application autoshift-cluster-config-maps -n openshift-gitops | tail -20
+----
+
+*Common cause:* The `config:` block or clusters file contains a YAML syntax error, causing the Helm render inside Argo CD to fail. Run `helm template` locally to catch the error before applying:
+
+[source,role="execute"]
+----
+helm template autoshift ./autoshift \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clusters/local-cluster.yaml 2>&1 | head -20
+----
+
+Fix any YAML error reported, then re-apply.
+
+== Learning Outcomes
+
+By completing this module, you should now understand:
+
+* ✓ Labels carry scalar values that map directly to OLM Subscription fields or Placement predicates; the `config:` block carries nested structured data that labels cannot express, and hub templates read it via a ConfigMap lookup
+* ✓ A `config:` block in a clusterset values file is rendered into a `cluster-set-config.*` ConfigMap by the `autoshift-cluster-config-maps` Application and merged into `\{clusterName}.rendered-config` by the `policy-cluster-configs` policy
+* ✓ Per-cluster values files under `autoshift/values/clusters/` override individual fields from the clusterset config; the merge fills in any key the cluster config did not set with the clusterset value
+* ✓ Confirming a per-cluster override means reading `managed-cluster-config.*` to see the cluster-level input and `local-cluster.rendered-config` to see the merged output; if the cluster value is not winning, the clusters file is likely missing from the `helm upgrade` command
+
+[.solve-button-placeholder]#solve-button-placeholder#
+
+[.validate-button-placeholder]#validate-button-placeholder#

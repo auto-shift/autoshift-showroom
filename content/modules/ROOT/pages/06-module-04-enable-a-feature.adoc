@@ -1,0 +1,542 @@
+= Enable a feature with labels alone
+include::partial$_attributes.adoc[]
+:navtitle: Module 4: Enable a feature
+
+Module 3 left a registry and an AWS cluster building in the background. Neither needs your attention. Back on `local-cluster`, the label flow from Module 2 is running and every policy in `hub-minimal.yaml` is Compliant. No operator beyond GitOps, Red Hat Advanced Cluster Management (ACM), and the ones you declared in Module 3 is installed.
+
+This module adds Node Feature Discovery (NFD) to the cluster using only labels. You write the 5-label contract by hand, apply it, and trace each step from the values file to a running Operator Lifecycle Manager (OLM) Subscription. Then you pin the operator to a specific ClusterServiceVersion (CSV), which is enforced by a mechanism that is not where most people go looking for it. Finally, you disable NFD and observe what the policy leaves behind.
+
+[mermaid]
+....
+flowchart TD
+  A["hub-minimal.yaml<br/>node-feature-discovery: 'true'"] -->|"helm upgrade"| B["cluster-set.hub<br/>ConfigMap updated"]
+  B -->|"cluster-labels policy"| C["local-cluster<br/>autoshift.io/node-feature-discovery: 'true'"]
+  C -->|"Placement predicate<br/>In ['true']"| D["PlacementDecision<br/>local-cluster selected"]
+  D -->|"PlacementBinding"| E["policy-nfd-operator-install<br/>dispatched"]
+  E -->|"OperatorPolicy enforces"| F["Subscription nfd<br/>namespace: openshift-nfd"]
+....
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Enable an operator across a clusterset using only the 5-label contract
+* Pin an operator to a specific CSV version and explain why the OperatorPolicy and its Subscription report different approval settings
+* Disable an operator and describe what the policy leaves behind
+
+== Exercise 1: Enable Node Feature Discovery
+
+`hub-minimal.yaml` contains no NFD labels. The cluster-labels policy currently stamps no `autoshift.io/node-feature-discovery` label on `local-cluster`, so the NFD Placement selects nothing and no NFD policy runs. You add all 5 labels.
+
+Every operator policy in AutoShift reads the same 5-label contract:
+
+* `<component>`: set to `'true'` to enable the operator. The Placement predicate matches only clusters where this label is `'true'`.
+* `<component>-subscription-name`: the OLM package name. This label cannot be omitted. `scripts/generate-imageset-config.sh` discovers which operators to mirror in a disconnected environment by reading it. An absent `-subscription-name` means the operator is invisible to the mirror generator.
+* `<component>-channel`: the OLM channel.
+* `<component>-source`: the CatalogSource name. Defaults to `redhat-operators`.
+* `<component>-source-namespace`: the namespace where the CatalogSource lives. Defaults to `openshift-marketplace`.
+
+`hub.yaml` carries the reference form for NFD near line 391, with the operator disabled and the version label commented out:
+
+[source,yaml]
+----
+### node-feature-discovery
+node-feature-discovery: 'false'
+node-feature-discovery-subscription-name: nfd
+node-feature-discovery-channel: stable
+node-feature-discovery-source: redhat-operators
+node-feature-discovery-source-namespace: openshift-marketplace
+# node-feature-discovery-version: 'nfd.4.18.0-202511261113'
+----
+
+[NOTE]
+====
+The commented version in `hub.yaml` names a 4.18-era ClusterServiceVersion (CSV) and is illustrative only. It shows the format, `nfd.<ocp-minor>.<patch>-<timestamp>`, not a value to copy. Your cluster runs OpenShift {ocp_version}, so the CSV you see in Exercise 2 will differ. Always read the CSV name off the cluster rather than copying an example.
+====
+
+You write the same 5 labels into `hub-minimal.yaml` with the enable flag set to `'true'`.
+
+. Confirm that `hub-minimal.yaml` has no NFD labels yet:
++
+[source,role="execute"]
+----
+grep -c 'node-feature-discovery' autoshift/values/clustersets/hub-minimal.yaml || echo "0 matches"
+----
++
+----
+0 matches
+----
+
+. Append all 5 labels to the file. The 6-space indentation places them inside the `hubClusterSets.hub.labels` block:
++
+[source,role="execute"]
+----
+cat >> autoshift/values/clustersets/hub-minimal.yaml << 'EOF'
+
+      ### Node Feature Discovery
+      node-feature-discovery: 'true'
+      node-feature-discovery-subscription-name: nfd
+      node-feature-discovery-channel: stable
+      node-feature-discovery-source: redhat-operators
+      node-feature-discovery-source-namespace: openshift-marketplace
+EOF
+----
+
+. Confirm the labels were appended with correct indentation:
++
+[source,role="execute"]
+----
+tail -8 autoshift/values/clustersets/hub-minimal.yaml
+----
++
+----
+
+      ### Node Feature Discovery
+      node-feature-discovery: 'true'
+      node-feature-discovery-subscription-name: nfd
+      node-feature-discovery-channel: stable
+      node-feature-discovery-source: redhat-operators
+      node-feature-discovery-source-namespace: openshift-marketplace
+----
+
+. Apply the updated values file. The ApplicationSet re-deploys every chart that changed:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. The cluster-labels Application re-renders the `cluster-set.hub` ConfigMap with the new labels. Wait for it to sync:
++
+[source,role="execute"]
+----
+oc get application autoshift-cluster-labels -n openshift-gitops
+----
++
+----
+NAME                       SYNC STATUS   HEALTH STATUS
+autoshift-cluster-labels   Synced        Healthy
+----
+
+. The cluster-labels policy reads the updated ConfigMap and stamps the new label onto `local-cluster`. Run this until `autoshift.io/node-feature-discovery` appears:
++
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o json | grep '"autoshift\.io/node-feature-discovery'
+----
++
+----
+            "autoshift.io/node-feature-discovery": "true",
+----
+
+. The NFD Placement predicate requires `autoshift.io/node-feature-discovery: 'true'`. The label is now present, so ACM creates a PlacementDecision:
++
+[source,role="execute",subs="attributes"]
+----
+oc get placementdecision -n {policy_namespace} \
+  -l cluster.open-cluster-management.io/placement=placement-policy-node-feature-discovery
+----
++
+----
+NAME                                                 AGE
+placement-policy-node-feature-discovery-decision-1   1m
+----
+
+. ACM dispatched `policy-nfd-operator-install` to `local-cluster` through the PlacementBinding. Confirm the policy is Compliant:
++
+[source,role="execute",subs="attributes"]
+----
+oc get policy policy-nfd-operator-install -n {policy_namespace}
+----
++
+----
+NAME                        REMEDIATION ACTION   COMPLIANCE STATE   AGE
+policy-nfd-operator-install   enforce            Compliant          2m
+----
+
+. The OperatorPolicy inside `policy-nfd-operator-install` created a Subscription named `nfd` in the `openshift-nfd` namespace. Confirm the Subscription exists:
++
+[source,role="execute"]
+----
+oc get sub nfd -n openshift-nfd
+----
++
+----
+NAME   PACKAGE   SOURCE             CHANNEL
+nfd    nfd       redhat-operators   stable
+----
+
+. Wait for OLM to install the operator. The CSV reaches `Succeeded` within 1 to 2 minutes:
++
+[source,role="execute"]
+----
+oc get csv -n openshift-nfd
+----
++
+----
+NAME                     DISPLAY                  PHASE
+nfd.4.22.0-202506191600  Node Feature Discovery   Succeeded
+----
++
+[NOTE]
+====
+A second policy, `policy-nfd-instance-deploy`, deploys a `NodeFeatureDiscovery` custom resource (CR) into `openshift-nfd`. It carries a dependency on `policy-nfd-operator-install` and activates after the operator is installed. Both policies share a single Placement, `placement-policy-node-feature-discovery`.
+====
+
+=== Verify
+
+Confirm both NFD policies are Compliant before continuing:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy -n {policy_namespace} | grep nfd
+----
+
+----
+policy-nfd-instance-deploy    enforce   Compliant   3m
+policy-nfd-operator-install   enforce   Compliant   3m
+----
+
+== Exercise 2: Pin the operator version
+
+When you add a `-version` label, AutoShift feeds that value into 2 fields on the OperatorPolicy: the Subscription's `startingCSV`, and a `versions` allow-list. The allow-list is the part worth understanding, because it is not obvious from the label name.
+
+The mechanism spans 2 objects, and it is worth being precise about which field lives where.
+
+On the OperatorPolicy, `upgradeApproval` stays `Automatic`. That field accepts only `None` or `Automatic`; there is no `Manual` value to set. Pinning is expressed as the `versions` allow-list instead.
+
+On the Subscription that ACM manages, the effect is different. When the allow-list is populated, ACM holds the Subscription at `installPlanApproval: Manual` so that Operator Lifecycle Manager cannot upgrade past the permitted set. You will see `Manual` there even though the policy says `Automatic`.
+
+Both are true at the same time. If you go looking for the pin and check only the policy, it looks like nothing was pinned. Check the Subscription as well.
+
+Read the current CSV name from the cluster, then use it as the version label value.
+
+. Read the installed CSV name:
++
+[source,role="execute"]
+----
+oc get csv -n openshift-nfd -o jsonpath='{.items[0].metadata.name}{"\n"}'
+----
++
+----
+nfd.4.22.0-202506191600
+----
++
+Your output will show the version installed in your environment. The format is typically `nfd.X.Y.Z-YYYYMMDDHHII`. Copy this value.
+
+. Capture the CSV name and append the version label in a single step:
++
+[source,role="execute"]
+----
+NFD_CSV=$(oc get csv -n openshift-nfd -o jsonpath='{.items[0].metadata.name}')
+echo "      node-feature-discovery-version: '${NFD_CSV}'" \
+  >> autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. Confirm the line was added:
++
+[source,role="execute"]
+----
+tail -3 autoshift/values/clustersets/hub-minimal.yaml
+----
++
+----
+      node-feature-discovery-source-namespace: openshift-marketplace
+      node-feature-discovery-version: 'nfd.4.22.0-202506191600'
+----
+
+. Apply the change. The PolicyGenerator re-renders `policy-nfd-operator-install` with `startingCSV` and the `versions` allow-list set:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. Wait for the NFD Argo CD Application to sync:
++
+[source,role="execute"]
+----
+oc get application autoshift-node-feature-discovery -n openshift-gitops
+----
++
+----
+NAME                               SYNC STATUS   HEALTH STATUS
+autoshift-node-feature-discovery   Synced        Healthy
+----
+
+. Read the Subscription. `startingCSV` now carries the pinned version, and `installPlanApproval` has changed:
++
+[source,role="execute"]
+----
+oc get sub nfd -n openshift-nfd -o yaml | grep -E 'startingCSV|installPlanApproval|installedCSV'
+----
++
+----
+  installPlanApproval: Manual
+  startingCSV: nfd.4.22.0-202506191600
+  installedCSV: nfd.4.22.0-202506191600
+----
++
+This is the enforcement. ACM switched the Subscription to manual approval because the allow-list is populated.
+
+. Now read the OperatorPolicy that ACM replicated to the cluster, and compare:
++
+[source,role="execute"]
+----
+oc get operatorpolicy -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.spec.versions}{"\t"}{.spec.upgradeApproval}{"\n"}{end}' | grep nfd
+----
++
+The `versions` allow-list carries your pinned CSV, and `upgradeApproval` reads `Automatic`.
+
+[IMPORTANT]
+====
+Read those 2 outputs together, because they appear to disagree.
+
+The OperatorPolicy says `upgradeApproval: Automatic`. The Subscription says `installPlanApproval: Manual`. Both are correct. `upgradeApproval` accepts only `None` or `Automatic`, so it can never say `Manual`. The pin is expressed as the `versions` allow-list on the policy, and ACM enforces it by holding the Subscription at manual approval.
+
+If you check only the policy, it looks like nothing was pinned. Check both objects.
+
+To allow an upgrade, change the `-version` label to the new CSV and re-apply, or remove the label entirely to track the channel again.
+====
+
+=== Verify
+
+Confirm the pinned version reached the Subscription's `startingCSV`, which is the field the `-version` label directly controls:
+
+[source,role="execute"]
+----
+oc get sub nfd -n openshift-nfd \
+  -o jsonpath='{.spec.startingCSV}{"\n"}'
+----
+
+----
+nfd.4.22.0-202506191600
+----
+
+The value matches the CSV you captured, and it matches the `node-feature-discovery-version` label you added to `hub-minimal.yaml`.
+
+== Exercise 3: Disable Node Feature Discovery
+
+Setting `node-feature-discovery: 'false'` changes the label value on `local-cluster`. The Placement predicate, which matches only clusters where the label is `'true'`, stops selecting `local-cluster`. ACM deletes the PlacementDecision and removes the replicated NFD policies from the `local-cluster` namespace.
+
+The Subscription itself is left on the cluster. OperatorPolicy's default behavior is to leave installed operators in place when the policy is removed. Uninstalling the operator requires manual cleanup.
+
+. Edit `hub-minimal.yaml` to set the enable flag to `'false'`:
++
+[source,role="execute"]
+----
+sed -i "s/node-feature-discovery: 'true'/node-feature-discovery: 'false'/" \
+  autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. Confirm the change:
++
+[source,role="execute"]
+----
+grep 'node-feature-discovery:' autoshift/values/clustersets/hub-minimal.yaml
+----
++
+----
+      node-feature-discovery: 'false'
+----
+
+. Apply the change:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml
+----
+
+. After the cluster-labels policy reconciles, the `autoshift.io/node-feature-discovery` label updates to `'false'`:
++
+[source,role="execute"]
+----
+oc get managedcluster local-cluster -o json | grep '"autoshift\.io/node-feature-discovery'
+----
++
+----
+            "autoshift.io/node-feature-discovery": "false",
+----
+
+. The Placement predicate `In ['true']` no longer matches. Confirm the PlacementDecision is gone:
++
+[source,role="execute",subs="attributes"]
+----
+oc get placementdecision -n {policy_namespace} \
+  -l cluster.open-cluster-management.io/placement=placement-policy-node-feature-discovery
+----
++
+----
+No resources found in policies-autoshift namespace.
+----
+
+. ACM removes the replicated policies from the `local-cluster` namespace. Confirm they are gone from the policy namespace:
++
+[source,role="execute",subs="attributes"]
+----
+oc get policy -n {policy_namespace} | grep nfd || echo "no nfd policies"
+----
++
+----
+no nfd policies
+----
+
+. Check whether the Subscription and namespace remain on the cluster:
++
+[source,role="execute"]
+----
+oc get sub nfd -n openshift-nfd
+----
++
+----
+NAME   PACKAGE   SOURCE             CHANNEL
+nfd    nfd       redhat-operators   stable
+----
++
+The Subscription is still present. ACM created it via the OperatorPolicy when the policy was active. Removing the policy binding does not trigger deletion. If you need to remove NFD entirely, delete the Subscription and the `openshift-nfd` namespace manually after this lab.
+
+=== Verify
+
+Confirm the policies are absent and the namespace remains:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy -n {policy_namespace} | grep nfd || echo "no nfd policies"
+----
+
+----
+no nfd policies
+----
+
+[source,role="execute"]
+----
+oc get ns openshift-nfd
+----
+
+----
+NAME           STATUS   AGE
+openshift-nfd  Active   15m
+----
+
+== Troubleshooting
+
+=== Label stamped but no PlacementDecision appears
+
+*Issue:* `autoshift.io/node-feature-discovery: 'true'` is on `local-cluster`, but no PlacementDecision exists for `placement-policy-node-feature-discovery`.
+
+*Diagnosis:* The Placement requires a `ManagedClusterSetBinding` in the policy namespace that covers the `hub` ManagedClusterSet. Confirm the binding exists:
+
+[source,role="execute",subs="attributes"]
+----
+oc get managedclustersetbinding -n {policy_namespace}
+----
+
+*Common cause:* The `policy-foundation` chart creates both the ManagedClusterSet and the ManagedClusterSetBinding. If `autoshift-policy-foundation` has not yet synced, the binding is absent. Check:
+
+[source,role="execute"]
+----
+oc get application autoshift-policy-foundation -n openshift-gitops
+----
+
+Wait for `Synced` and `Healthy`, then re-check the PlacementDecision.
+
+=== policy-nfd-operator-install stays NonCompliant
+
+*Issue:* The policy appears in the policy namespace but shows `NonCompliant` after several minutes.
+
+*Diagnosis:* Check the policy events for the specific failure:
+
+[source,role="execute",subs="attributes"]
+----
+oc describe policy policy-nfd-operator-install -n {policy_namespace} | tail -30
+----
+
+*Common cause:* The `redhat-operators` CatalogSource is unavailable or the `openshift-nfd` namespace was not created. Check:
+
+[source,role="execute"]
+----
+oc get catalogsource redhat-operators -n openshift-marketplace
+oc get ns openshift-nfd
+----
+
+If the CatalogSource shows `READY: false`, the catalog is unreachable. This is a cluster networking issue, not an AutoShift issue.
+
+=== Subscription exists but CSV does not install
+
+*Issue:* `oc get sub nfd -n openshift-nfd` returns a result, but `oc get csv -n openshift-nfd` shows nothing.
+
+*Cause:* OLM creates an InstallPlan to resolve the CSV. With a version pinned, there are 2 common causes. Either the InstallPlan is waiting for approval, or the `-version` label names a CSV that does not exist in the channel so OLM cannot resolve anything to install.
+
+Check the InstallPlan, the approval mode, and the pinned value together:
+
+[source,role="execute"]
+----
+oc get installplan -n openshift-nfd
+oc get sub nfd -n openshift-nfd \
+  -o jsonpath='{.spec.installPlanApproval}{"\t"}{.spec.startingCSV}{"\n"}'
+----
+
+If the InstallPlan shows `APPROVED: false` and the Subscription reads `Manual`, that is the pin working as intended. Approve it deliberately, or change the `-version` label to the version you actually want.
+
+If `startingCSV` names a CSV that is not available in the `{nfd_channel}` channel, correct the `node-feature-discovery-version` label in `hub-minimal.yaml` to a CSV that exists, or remove the label entirely to track the channel again, then re-apply.
+
+=== autoshift-node-feature-discovery Application stays OutOfSync
+
+*Issue:* The Argo CD Application does not reach `Synced` after `helm upgrade`.
+
+*Diagnosis:*
+
+[source,role="execute"]
+----
+oc describe application autoshift-node-feature-discovery -n openshift-gitops | tail -20
+----
+
+*Common cause:* The `-version` label value does not exactly match the CSV name OLM assigned. CSV names are case-sensitive and include the full build timestamp. Compare the value in `hub-minimal.yaml` with the output of `oc get csv -n openshift-nfd`.
+
+=== policy-nfd-instance-deploy stays NonCompliant after operator installs
+
+*Issue:* `policy-nfd-operator-install` is Compliant, but `policy-nfd-instance-deploy` is NonCompliant several minutes later.
+
+*Cause:* `policy-nfd-instance-deploy` has a declared dependency on `policy-nfd-operator-install`. Even after the dependency is met, the `NodeFeatureDiscovery` Custom Resource Definition (CRD) controller may still be starting. Check whether the CRD is registered in the cluster:
+
+[source,role="execute"]
+----
+oc get crd | grep nfd.openshift.io
+----
+
+If no CRD appears, the operator did not install cleanly. Check the CSV for detail:
+
+[source,role="execute"]
+----
+oc describe csv -n openshift-nfd | grep -A 5 Reason
+----
+
+If the CRD is present but the policy is still NonCompliant, wait 1 more minute and then force policy re-evaluation:
+
+[source,role="execute",subs="attributes"]
+----
+oc annotate policy policy-nfd-instance-deploy -n {policy_namespace} \
+  policy.open-cluster-management.io/trigger-update="$(date +%s)" --overwrite
+----
+
+== Learning Outcomes
+
+By completing this module, you should now understand:
+
+* ✓ The 5-label contract is the complete configuration interface for any OLM operator in AutoShift; writing those labels in the values file is the only action required to enable the operator across every cluster in the clusterset
+* ✓ The `-subscription-name` label cannot be omitted because `scripts/generate-imageset-config.sh` discovers which operators to mirror by reading it; an absent label makes the operator invisible to the disconnected mirror generator
+* ✓ Adding a `-version` label sets `startingCSV` and adds the version to the OperatorPolicy's `versions` allow-list. The policy's own `upgradeApproval` can only be `None` or `Automatic` and stays `Automatic`, while ACM enforces the pin by switching the managed Subscription to `installPlanApproval: Manual`. The 2 objects appear to disagree and both are correct
+* ✓ Setting the enable flag to `'false'` removes the cluster from the Placement selection and unbinds the policy, but ACM leaves the OLM Subscription and namespace in place; uninstalling the operator is a separate manual step
+
+[.solve-button-placeholder]#solve-button-placeholder#
+
+[.validate-button-placeholder]#validate-button-placeholder#

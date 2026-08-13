@@ -1,0 +1,145 @@
+= Overview
+include::partial$_attributes.adoc[]
+:navtitle: Overview
+:toc:
+:toc-placement: preamble
+:icons: font
+
+AutoShift is an Infrastructure-as-Code framework for configuring OpenShift clusters at scale.
+It uses Red Hat Advanced Cluster Management and Red Hat OpenShift GitOps to deploy ACM policies as
+individual charts that run Day 2 configuration across a hub and its managed clusters.
+
+The problem it addresses is configuration drift. When you configure a fleet by hand, clusters
+diverge. A channel gets pinned on one cluster but not another. A catalog source points to a mirror
+in one environment but to the public registry in the next. AutoShift makes the values file the
+single source of truth. Every cluster's configuration is a function of the labels and config blocks
+in that file.
+
+This page explains the 3 mechanisms you need to understand before running your first command:
+the three-phase deployment, the label flow, and the distinction between labels and `config:`
+blocks.
+
+== Three-phase deployment
+
+AutoShift deploys in 3 phases:
+
+. *Bootstrap.* Install Red Hat Advanced Cluster Management on the hub cluster with `helm install`,
+then Red Hat OpenShift GitOps. The order matters, for the reason given below.
+. *Deploy AutoShift.* Create an Argo CD Application pointing at the `autoshift/` Helm chart.
+. *Policy fan-out.* The ApplicationSet auto-discovers every directory under `policies/*` and
+deploys each as a separate Argo CD Application. No manual registration required.
+
+After phase 3, the framework manages itself. The `openshift-gitops` and
+`advanced-cluster-management` policies take over ongoing management of the two operators installed
+manually in phase 1. From that point, a change to the values file is all you need to adjust either
+operator.
+
+One constraint in the bootstrap order is non-obvious: ACM must be installed *before* Red Hat
+OpenShift GitOps. The GitOps repo-server runs a PolicyGenerator CMP sidecar whose init-container
+image is resolved by a render-time lookup of ACM's `multicluster-operators-hub-subscription`
+deployment. If you bootstrap GitOps first, that lookup finds nothing and the CMP is
+misconfigured. This applies to source installs only. In OCI mode the charts are pre-rendered and no
+CMP is involved, which is why `docs/quickstart.md` installs GitOps first in its OCI section. Module
+1 walks through the correct sequence and shows what the error looks like if you invert it.
+
+== The label flow
+
+Labels are the control plane for AutoShift. You define them in values files. You never apply a
+feature label to a `ManagedCluster` object by hand.
+
+The flow has 4 steps:
+
+. Labels are set under `hubClusterSets`, `managedClusterSets`, or `clusters` in
+`autoshift/values/clustersets/*.yaml` or `autoshift/values/clusters/*.yaml`.
+. The `cluster-labels` Argo CD Application renders those values into ConfigMaps named
+`cluster-set.\{name}` and `managed-cluster.\{name}` in the policy namespace.
+. The `cluster-labels` policy (an ACM ConfigurationPolicy) looks up those ConfigMaps at runtime
+and stamps the resolved labels onto each `ManagedCluster` object. Enforcement is `mustonlyhave`:
+a label removed from the values file is removed from every cluster that had it.
+. Other policies use Placement predicates to select clusters by those labels. When a predicate
+matches, ACM creates a PlacementDecision and propagates the policy to that cluster.
+
+[mermaid]
+....
+flowchart TD
+    A["values files<br/>clustersets/ · clusters/"]
+    B["ConfigMaps<br/>cluster-set.name<br/>managed-cluster.name"]
+    C["ManagedCluster<br/>autoshift.io/* labels stamped"]
+    D["PlacementDecision"]
+    E["Policy applied<br/>to cluster"]
+
+    A -->|"Argo CD renders"| B
+    B -->|"cluster-labels policy<br/>runtime lookup"| C
+    C -->|"Placement predicate"| D
+    D -->|"ACM propagates"| E
+....
+
+Two labels are stamped automatically and are not configurable in the values file:
+`autoshift.io/owning-namespace` and `autoshift.io/owning-deployment`. They record which AutoShift
+deployment manages a given cluster and drive ownership checks in the cluster-install policies.
+
+== Labels versus config: blocks
+
+Every operator policy reads the same 5 labels:
+
+* `<component>: 'true'` enables the operator.
+* `<component>-subscription-name` sets the OLM package name.
+* `<component>-channel` sets the update channel.
+* `<component>-source` sets the catalog source (default: `redhat-operators`).
+* `<component>-source-namespace` sets the catalog namespace (default: `openshift-marketplace`).
+
+An optional sixth label, `<component>-version`, pins a specific CSV. The value feeds both
+`startingCSV` and the OperatorPolicy's `versions` allow-list. The operator will not move past the
+pinned version until you change the label.
+
+The enforcement spans 2 objects. The OperatorPolicy's `upgradeApproval` field accepts only `None`
+or `Automatic` and stays `Automatic`, because there is no `Manual` value to set there. ACM then
+holds the managed Subscription at `installPlanApproval: Manual` so OLM cannot upgrade past the
+allowed set. Module 4 has you read both and compare them.
+
+The reason the operator contract is label-driven is architectural: ACM's `OperatorPolicy` can only
+read labels from the `ManagedCluster` object in the hub's placement context. Labels are the only
+data available at that point.
+
+Arbitrary structured configuration, such as a list of trusted registries or an S3 endpoint for an
+object-storage backend, cannot fit in a label. That configuration goes into a `config:` block in
+the values file instead. AutoShift renders `config:` blocks into a ConfigMap named
+`\{cluster}.rendered-config` on the hub. Policies read that ConfigMap through hub templates.
+
+Module 5 covers both mechanisms and shows where the boundary is.
+
+== Precedence
+
+When the same label is set at multiple levels, the most specific value wins:
+
+. *Cluster-specific* values (`autoshift/values/clusters/\{cluster}.yaml`)
+. *Clusterset* values (`autoshift/values/clustersets/\{name}.yaml`)
+. *Chart defaults* in the policy's own `values.yaml`
+
+Because enforcement is `mustonlyhave`, labels set by an earlier values file that are absent from
+the current version are removed from all matching clusters. There is no way to keep a stale label
+in place by omitting it. Removal propagates.
+
+== What you will build
+
+The lab runs on a single hub cluster. The hub is registered as `local-cluster` and is the only
+managed cluster in scope. You start from `hub-minimal.yaml`, which enables only Red Hat Advanced
+Cluster Management and Red Hat OpenShift GitOps. You add capabilities one at a time and observe
+each step of the mechanism before moving to the next.
+
+[cols="^1,3,^1",options="header"]
+|===
+|Module |Topic |Duration
+
+|1 |Bootstrap ACM, OpenShift GitOps, and AutoShift |~30 min
+|2 |Trace the label flow from values file to cluster |~25 min
+|3 |Enable, pin, and disable Node Feature Discovery |~30 min
+|4 |Add a `config:` block and override it per cluster |~25 min
+|5 |Operate and troubleshoot a fleet |~30 min
+|6 |Author a PolicyGenerator policy |~30 min
+|7 |OCI publishing and disconnected environments |~60 min
+|8 |Fleet operations capstone |~20 min
+|9 |Provision an AWS spoke cluster |~50 min
+|===
+
+Total estimated time: approximately 4 hours 20 minutes.

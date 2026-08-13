@@ -1,7 +1,6 @@
 ---
 site:
-  title: Showroom Template Demo
-  url: https://github.com/rhpds/showroom_template_nookbag
+  title: Getting to know AutoShift
   start_page: modules::index.adoc
 
 content:
@@ -13,6 +12,12 @@ ui:
   bundle:
     url: https://github.com/rhpds/rhdp_showroom_theme/releases/download/latest/ui-bundle.zip
     snapshot: true
+  supplemental_files:
+    - path: ./content/supplemental-ui
+    - path: ./content/lib
+    - path: .nojekyll
+    - path: ui.yml
+      contents: "static_files: [ .nojekyll ]"
 
 antora:
   extensions:
@@ -22,6 +27,10 @@ antora:
       mermaid_initialize_options:
         start_on_load: true
     - require: '@andrew-jones/antora-tabs-extension'
+    # Inlines buttons.js + site-extra.css into every page at build time.
+    # Required for the solve/validate panels. Reads the files off disk, so it
+    # does not depend on supplemental_files copying them into the UI output.
+    - require: ./content/lib/inject-buttons.js
 
 output:
   dir: ./www

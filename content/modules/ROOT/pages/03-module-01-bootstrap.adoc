@@ -1,0 +1,376 @@
+= Bootstrap AutoShift on a hub cluster
+include::partial$_attributes.adoc[]
+:navtitle: Module 1: Bootstrap
+
+AutoShift installs in 3 phases. Each phase builds on the previous one, and the ordering is not arbitrary.
+
+Phase 1 bootstraps Red Hat Advanced Cluster Management and OpenShift GitOps by hand using Helm. Phase 2 creates an Argo CD Application that points at the `autoshift/` chart. Phase 3 is automatic: an ApplicationSet inside that chart discovers every directory under `policies/` and deploys it. After phase 3, the GitOps and ACM policies take over management of the operators you bootstrapped by hand.
+
+[mermaid]
+....
+flowchart TD
+  A["Phase 1a<br/>helm install ACM"] --> B["Phase 1b<br/>helm install GitOps"]
+  B --> C["Phase 2<br/>helm install autoshift"]
+  C --> D["Phase 3<br/>ApplicationSet discovers<br/>policies/*"]
+  D --> E["ACM policies<br/>enforce state"]
+....
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Bootstrap Red Hat Advanced Cluster Management and OpenShift GitOps on a hub cluster in the correct order
+* Explain why ACM must be installed before GitOps on source installs
+* Deploy AutoShift as an Argo CD Application and observe the ApplicationSet discover and deploy every chart under `policies/`
+
+== Exercise 1: Clone the repository and inspect the values files
+
+Before running anything, read what you are about to install.
+
+AutoShift ships several clusterset values files under `autoshift/values/clustersets/`. Each file enables a different set of operators. `hub.yaml` enables roughly thirty operators at once, which buries the mechanism under a wall of labels from the start. `hub-minimal.yaml` enables only GitOps and ACM. That small surface lets you add one capability at a time in later modules and observe each one take effect. The lab starts from `hub-minimal.yaml` and stays there until you have reason to add more.
+
+. Clone the AutoShift repository:
++
+[source,role="execute",subs="attributes"]
+----
+git clone {autoshift_repo} autoshiftv2 && cd autoshiftv2
+----
+
+. Confirm the top-level structure:
++
+[source,role="execute"]
+----
+ls -1
+----
++
+----
+advanced-cluster-management
+autoshift
+docs
+openshift-gitops
+policies
+scripts
+----
+
+. Read the minimal values file:
++
+[source,role="execute"]
+----
+cat autoshift/values/clustersets/hub-minimal.yaml
+----
++
+The file defines one clusterset named `hub`. Every enabled operator follows the same five-label contract: an enable flag, a subscription name, a channel, a catalog source, and a source namespace. The subscription name is not optional: `scripts/generate-imageset-config.sh` discovers which operators to mirror for disconnected environments by reading it. Leave it out and the mirroring script misses the operator.
+
+. Compare the minimal file against the full hub profile to see what you are deferring:
++
+[source,role="execute"]
+----
+diff autoshift/values/clustersets/hub-minimal.yaml \
+     autoshift/values/clustersets/hub.yaml | grep '^[<>]' | head -50
+----
++
+The output shows roughly thirty additional labels in `hub.yaml`, each enabling a distinct operator. This is what you will be working through in later modules, one label at a time.
+
+=== Verify
+
+Confirm the ACM channel in the values file:
+
+[source,role="execute"]
+----
+grep 'acm-channel' autoshift/values/clustersets/hub-minimal.yaml
+----
+
+[subs="attributes"]
+----
+      acm-channel: {acm_channel}
+----
+
+Confirm the GitOps channel:
+
+[source,role="execute"]
+----
+grep 'gitops-channel' autoshift/values/clustersets/hub-minimal.yaml
+----
+
+[subs="attributes"]
+----
+      gitops-channel: {gitops_channel}
+----
+
+== Exercise 2: Bootstrap ACM, then GitOps
+
+The order matters. Read the reason before running any command.
+
+The Argo CD repo-server runs a PolicyGenerator CMP sidecar. Nearly every policy in AutoShift is a PolicyGenerator directory, not a Helm chart. The CMP sidecar renders those directories into ACM `Policy` objects at sync time. The sidecar runs as an init-container in the repo-server pod, and its image is not hardcoded in the GitOps bootstrap chart. Instead, the chart reads the image from ACM's `multicluster-operators-hub-subscription` deployment at install time.
+
+If GitOps is installed before ACM, that deployment does not yet exist. The image field is empty. The repo-server pod fails with:
+
+----
+Deployment "<argo>-repo-server" is invalid:
+spec.template.spec.initContainers[1].image: Required value
+----
+
+No image means no CMP. No CMP means no PolicyGenerator. No PolicyGenerator means no policies render or sync.
+
+`docs/quickstart.md` lists GitOps before ACM in its OCI installation section, which is the wrong order for source installs. OCI mode deploys pre-rendered Helm charts and has no dependency on the CMP init-container. For source installs, ACM must come first. If you install GitOps first by mistake, the recovery is to run `helm upgrade` on the GitOps chart again once ACM's operator is up.
+
+=== Step 1: Install ACM
+
+You do not need to wait for MultiClusterHub to reach `Running` before proceeding to GitOps. You only need ACM's operator deployment to exist.
+
+. Install the ACM bootstrap chart from your local clone:
++
+[source,role="execute"]
+----
+helm upgrade --install advanced-cluster-management advanced-cluster-management
+----
+
+. Wait for the operator deployment to appear. Re-run this until you see `1/1` in the READY column:
++
+[source,role="execute"]
+----
+oc get deploy multicluster-operators-hub-subscription -n open-cluster-management
+----
++
+----
+NAME                                      READY   UP-TO-DATE   AVAILABLE   AGE
+multicluster-operators-hub-subscription   1/1     1            1           90s
+----
++
+Once you see `1/1`, proceed. You do not need to wait for MCH to reach `Running`.
+
+. Check MultiClusterHub status. MCH takes roughly 10 minutes to reach `Running`. You can continue with the next steps while it completes, but you will not be able to verify policy compliance until it is `Running`:
++
+[source,role="execute"]
+----
+oc get mch -A
+----
+
+=== Step 2: Install GitOps
+
+ACM's operator deployment now exists. The GitOps chart can resolve the init-container image.
+
+. Install the GitOps bootstrap chart:
++
+[source,role="execute"]
+----
+helm upgrade --install openshift-gitops openshift-gitops \
+  -f policies/stable/openshift-gitops/values.yaml
+----
+
+. Wait for the GitOps pods to reach `Running`. This takes a few minutes:
++
+[source,role="execute"]
+----
+oc get pods -n openshift-gitops
+----
+
+=== Verify
+
+Confirm the repo-server pod is running and did not crash on the init-container:
+
+[source,role="execute"]
+----
+oc get pod -n openshift-gitops -l app.kubernetes.io/name=openshift-gitops-repo-server
+----
+
+----
+NAME                                           READY   STATUS    RESTARTS   AGE
+openshift-gitops-repo-server-c999f75d5-l4rsg   1/1     Running   0          3m
+----
+
+A `RESTARTS` count above 0, or a `CrashLoopBackOff` status, indicates the init-container image resolution failed. See the Troubleshooting section.
+
+Confirm the Argo CD instance exists:
+
+[source,role="execute"]
+----
+oc get argocd -n openshift-gitops
+----
+
+----
+NAMESPACE          NAME          AGE
+openshift-gitops   infra-gitops  3m
+----
+
+== Exercise 3: Deploy AutoShift and watch the ApplicationSet fan-out
+
+This exercise uses the Helm dev path: you render the `autoshift/` chart from your local working copy. You can edit a values file and re-run the same command to apply the change immediately, with no commit, push, or Argo CD sync required.
+
+[IMPORTANT]
+====
+The release name must be 11 characters or fewer. The ApplicationSet derives the policy namespace from it as `policies-<release-name>`. AutoShift's naming validator rejects any namespace that exceeds the limit. The name `autoshift` is 9 characters and is safe. The Helm default `release-name` is 21 characters and will fail the check.
+====
+
+The ApplicationSet discovers policies with 2 Git generators, both matching files rather than directories. The first matches `policies/<tier>/*/kustomization.yaml` and picks up every PolicyGenerator directory. The second matches `policies/<tier>/*/Chart.yaml` and picks up the 4 Helm holdouts. The tiers are `stable`, `certified`, and `community`.
+
+Each directory matches exactly 1 generator, because a policy migrated to PolicyGenerator drops its `Chart.yaml`. That is how AutoShift routes each directory to the correct source type without a per-policy list. You never register a policy by hand.
+
+. Deploy AutoShift from your local working copy against the minimal values file:
++
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml
+----
++
+The policy namespace is computed from the release name. With release name `autoshift`, the namespace is `{policy_namespace}`.
+
+. List the Applications Argo CD has created. Run this a few times over the next minute. Each new line is one chart under `policies/` being deployed:
++
+[source,role="execute"]
+----
+oc get applications.argoproj.io -n openshift-gitops
+----
+
+. Confirm the policy namespace was created:
++
+[source,role="execute",subs="attributes"]
+----
+oc get namespace {policy_namespace}
+----
+
+. List the ACM policies now on the hub:
++
+[source,role="execute",subs="attributes"]
+----
+oc get policies -n {policy_namespace}
+----
+
+=== Verify
+
+Confirm the ApplicationSet's discovery paths. Note `files`, not `directories`:
+
+[source,role="execute"]
+----
+oc get applicationset autoshift-policies -n openshift-gitops \
+  -o jsonpath='{range .spec.generators[0].git.files[*]}{.path}{"\n"}{end}'
+----
+
+----
+policies/stable/*/kustomization.yaml
+policies/certified/*/kustomization.yaml
+policies/community/*/kustomization.yaml
+policies/*/*/*/kustomization.yaml
+policies/*/*/*/*/kustomization.yaml
+----
+
+The last 2 entries carry `exclude: true`, which keeps the matcher from descending into nested directories such as `manifests/`.
+
+Confirm the GitOps and ACM policies are present. These two policies now own the operators you bootstrapped by hand in Exercise 2. From this point, ACM enforces their configuration:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policies -n {policy_namespace} | grep -E 'gitops|acm'
+----
+
+----
+policy-gitops-operator-install   ...
+policy-acm-operator-install      ...
+----
+
+The hub cluster has no clusterset assignment yet. Placements will not select it, and policies will show as not applicable. That is expected at this stage. Module 2 covers clusterset assignment.
+
+== Troubleshooting
+
+=== Repo-server crashes: "Required value" on init-container image
+
+*Issue:* The Argo CD repo-server pod fails immediately after the GitOps install. Pod events show:
+
+----
+spec.template.spec.initContainers[1].image: Required value
+----
+
+*Cause:* GitOps was installed before ACM's operator deployment existed. The bootstrap chart could not find `multicluster-operators-hub-subscription` and wrote an empty string for the init-container image.
+
+*Recovery:* Verify the ACM deployment is present, then re-run the GitOps install:
+
+[source,role="execute"]
+----
+oc get deploy multicluster-operators-hub-subscription -n open-cluster-management
+helm upgrade --install openshift-gitops openshift-gitops \
+  -f policies/stable/openshift-gitops/values.yaml
+----
+
+=== MultiClusterHub stuck in Installing
+
+*Issue:* `oc get mch -A` shows `Installing` for more than 15 minutes with no progression.
+
+*Diagnosis:*
+
+[source,role="execute"]
+----
+oc get pods -n open-cluster-management | grep -v Running
+oc get events -n open-cluster-management --sort-by=.lastTimestamp | tail -20
+----
+
+*Common cause:* A pod is in `ImagePullBackOff`. On clusters where the internal image registry is not enabled, the bootstrap Job defaults to `image-registry.openshift-image-registry.svc:5000/openshift/cli:latest`, which cannot be pulled. Override the image on the ACM install:
+
+[source,role="execute"]
+----
+helm upgrade --install advanced-cluster-management advanced-cluster-management \
+  --set image=registry.redhat.io/openshift4/ose-cli:latest
+----
+
+Pass the same `--set image=` flag to the GitOps install if that bootstrap Job also shows `ImagePullBackOff`.
+
+=== ApplicationSet exists but no Applications appear
+
+*Issue:* `oc get applicationset autoshift-policies -n openshift-gitops` succeeds, but no per-policy Applications appear.
+
+*Diagnosis:*
+
+[source,role="execute"]
+----
+oc describe applicationset autoshift-policies -n openshift-gitops
+oc get events -n openshift-gitops --sort-by=.lastTimestamp | tail -20
+----
+
+*Common cause:* Argo CD cannot reach the Git repository. Confirm that `{autoshift_repo}` is reachable from the cluster. If the repository requires credentials, add them in the OpenShift GitOps UI before redeploying AutoShift.
+
+=== Release name too long: naming validator fails
+
+*Issue:* The AutoShift Helm install fails with a validation error referencing policy namespace length.
+
+*Cause:* The release name is longer than 11 characters. The ApplicationSet computes the policy namespace as `policies-<release-name>`, and AutoShift validates the result.
+
+*Fix:* Use `autoshift` as the release name (9 characters):
+
+[source,role="execute"]
+----
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml
+----
+
+=== Policies show NonCompliant or Unknown after deployment
+
+*Issue:* `oc get policies -n {policy_namespace}` shows `NonCompliant` or `Unknown` for all policies immediately after deployment.
+
+*Cause:* The hub cluster has not been assigned to a clusterset yet, so Placements select no clusters and policies cannot evaluate. This is expected. A second common cause is that MultiClusterHub has not finished installing: policy evaluation depends on ACM's governance components reaching `Running`.
+
+*Check MCH status first:*
+
+[source,role="execute"]
+----
+oc get mch -A
+----
+
+If MCH shows `Running`, proceed to Module 2 to assign the hub cluster to a clusterset.
+
+== Learning Outcomes
+
+By completing this module, you should now understand:
+
+* ✓ ACM must be bootstrapped before GitOps on source installs, because the GitOps repo-server resolves its PolicyGenerator CMP init-container image from ACM's `multicluster-operators-hub-subscription` deployment at install time
+* ✓ The three-phase deployment model: bootstrap operators by hand, hand control to Argo CD via the `autoshift/` chart, then let the ApplicationSet auto-discover and deploy all charts under `policies/`
+* ✓ Starting from `hub-minimal.yaml` rather than `hub.yaml` gives you a minimal, readable starting point with only GitOps and ACM enabled
+* ✓ The ApplicationSet discovers policies with 2 Git file generators, one matching `policies/<tier>/*/kustomization.yaml` for PolicyGenerator directories and one matching `policies/<tier>/*/Chart.yaml` for the Helm holdouts. No manual registration is needed
+* ✓ After phase 3, the GitOps and ACM policies take over management of the operators that were bootstrapped by hand, and ACM enforces their configuration going forward
+
+[.solve-button-placeholder]#solve-button-placeholder#
+
+[.validate-button-placeholder]#validate-button-placeholder#

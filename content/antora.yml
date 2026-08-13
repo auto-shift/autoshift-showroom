@@ -1,11 +1,13 @@
 name: modules
-title: Showroom Collection
+title: Getting to know AutoShift
 version: ~
+start_page: ROOT:index.adoc
 nav:
   - modules/ROOT/nav.adoc
 
 asciidoc:
   attributes:
+    lab_name: Getting to know AutoShift
     experimental: true
     page-pagination: true
     showroom-collection-version: v1.5.6
@@ -15,4 +17,12 @@ asciidoc:
     bastion_ssh_password: password
     ssh_user: lab-user
     openshift_console_url: https://console-openshift-console.apps.cluster-abc123.ocpv00.rhdp.net
+    openshift_api_url: https://api.cluster-abc123.ocpv00.rhdp.net:6443
     openshift_cluster_ingress_domain: apps.cluster-abc123.ocpv00.rhdp.net
+    # Placeholders for local builds only. At runtime these are replaced by the
+    # Showroom user_data that AgnosticD seeds for the lab's AWS sandbox account.
+    # Never put real credentials here: this file is committed to git.
+    aws_access_key_id: injected-at-runtime
+    aws_secret_access_key: injected-at-runtime
+    aws_region: us-east-1
+    aws_base_domain: sandbox.example.opentlc.com

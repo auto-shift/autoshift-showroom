@@ -1,0 +1,421 @@
+= Author a PolicyGenerator policy
+include::partial$_attributes.adoc[]
+:navtitle: Module 7: Author a PolicyGenerator policy
+
+Module 6 ended with you diagnosing the effect of a missing label on a running policy. This module moves to the other side of that workflow: creating a new policy from scratch. Every operator policy in the repository follows the same PolicyGenerator structure. The generator script produces that structure in seconds. After scaffolding, you will read the 4 files it creates, render the directory locally the same way the Argo CD Config Management Plugin (CMP) sidecar does, and run the integration test to validate the result before it ever reaches a cluster.
+
+[mermaid]
+....
+flowchart TD
+  A["generate-operator-policy.sh<br/>Scaffold 4 files"] --> B["kustomize build<br/>+ PolicyGenerator plugin<br/>local render"]
+  B --> C["ACM Policy<br/>Placement<br/>PlacementBinding"]
+  C --> D["Argo CD Application<br/>syncs to hub"]
+  D --> E["ACM propagates<br/>to matching clusters"]
+....
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Scaffold a new operator policy with the generator script instead of writing the chart by hand
+* Render a PolicyGenerator directory locally the same way the Argo CD CMP sidecar does
+* Explain what the integration test enforces, including why an undeclared label fails CI
+
+== Exercise 1: Scaffold the policy
+
+Nearly every policy under `policies/` is a PolicyGenerator directory, not a Helm chart. A PolicyGenerator (PG) directory contains 4 key files: a `kustomization.yaml` entrypoint, a `policy-generator-config.yaml` that defines the policy graph and its settings, a `placement.yaml` that selects target clusters by label, and a nested kustomization under `manifests/operator-install/` that calls the shared `components/operator-install` Helm chart. The shared chart produces the OperatorPolicy and Namespace for you, with hub template expressions pre-wired for the 5 operator labels.
+
+Writing those 4 files by hand is slow and error-prone. `scripts/generate-operator-policy.sh` produces them from a single command in the right structure. The companion script `generate-policy.sh` handles non-operator configuration policies and refuses to operate on any directory that already contains a `Chart.yaml`.
+
+The operator for this exercise is the Web Terminal Operator. It is small, ships in `redhat-operators`, and is not already in the repository. Its Operator Lifecycle Manager (OLM) package name is `web-terminal`.
+
+. Look up the operator in OperatorHub to confirm the channel and package name:
++
+[source,role="execute"]
+----
+oc get packagemanifest web-terminal -n openshift-marketplace \
+  -o custom-columns=NAME:.metadata.name,CHANNEL:.status.defaultChannel
+----
++
+----
+NAME           CHANNEL
+web-terminal   fast
+----
+
+. Run the generator. The first positional argument is the component name used for the directory and all labels. The second is the OLM subscription name. `--namespace openshift-operators` is correct here because this operator installs into the global operator namespace:
++
+[source,role="execute"]
+----
+./scripts/generate-operator-policy.sh \
+  web-terminal \
+  web-terminal \
+  --channel fast \
+  --namespace openshift-operators
+----
++
+The script creates the directory, substitutes the component name and subscription into the templates, and then validates the output by running kustomize with the PolicyGenerator plugin. If `.tools/kustomize` is not present, it warns and skips that validation step.
+
+. List the generated directory:
++
+[source,role="execute"]
+----
+ls -1 policies/stable/web-terminal/
+----
++
+----
+README.md
+kustomization.yaml
+manifests
+placement.yaml
+policy-generator-config.yaml
+----
+
+=== Verify
+
+Confirm the 4 key files exist:
+
+[source,role="execute"]
+----
+ls policies/stable/web-terminal/kustomization.yaml \
+   policies/stable/web-terminal/policy-generator-config.yaml \
+   policies/stable/web-terminal/placement.yaml \
+   policies/stable/web-terminal/manifests/operator-install/kustomization.yaml
+----
+
+----
+policies/stable/web-terminal/kustomization.yaml
+policies/stable/web-terminal/policy-generator-config.yaml
+policies/stable/web-terminal/placement.yaml
+policies/stable/web-terminal/manifests/operator-install/kustomization.yaml
+----
+
+== Exercise 2: Read the scaffolded files and render locally
+
+Read each file to understand what role it plays before running the render.
+
+=== kustomization.yaml
+
+`kustomization.yaml` is the Kustomize entrypoint. It is always 3 lines: it declares `policy-generator-config.yaml` as a generator. Kustomize passes control to the PolicyGenerator plugin at render time.
+
+[source,role="execute"]
+----
+cat policies/stable/web-terminal/kustomization.yaml
+----
+
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+generators:
+  - policy-generator-config.yaml
+----
+
+=== policy-generator-config.yaml
+
+`policy-generator-config.yaml` defines the full policy graph: the policy namespace, remediation action, evaluation interval, severity, the placement reference, and the list of manifest paths. The `${...}` tokens such as `$\{POLICY_NAMESPACE}`, `$\{REMEDIATION}`, `$\{EVAL_COMPLIANT}`, and `$\{EVAL_NONCOMPLIANT}` are substituted by the CMP sidecar before kustomize runs in the live cluster. In a local render they appear as literal strings, which is expected.
+
+[source,role="execute"]
+----
+cat policies/stable/web-terminal/policy-generator-config.yaml
+----
+
+Read the `policies:` list at the bottom. It contains 1 entry: `policy-web-terminal-operator-install`. That entry points at `manifests/operator-install` as its manifest path. The PolicyGenerator wraps the resources in that directory into a `ConfigurationPolicy` and wires them to the Placement.
+
+=== placement.yaml
+
+`placement.yaml` is a hand-authored ACM Placement object. The predicate selects clusters that carry `autoshift.io/web-terminal: 'true'`. No cluster receives this policy until you add that label in a values file and apply.
+
+[source,role="execute"]
+----
+cat policies/stable/web-terminal/placement.yaml
+----
+
+Find the `matchExpressions` block and read the key. It is `autoshift.io/web-terminal` with operator `In` and value `'true'`. That single label controls fleet-wide rollout.
+
+=== manifests/operator-install/kustomization.yaml
+
+`manifests/operator-install/kustomization.yaml` is a nested kustomization that renders the shared `components/operator-install` Helm chart. It passes the subscription name, channel, source, and source namespace as hub template expressions. Each expression reads the corresponding `autoshift.io/<component>-*` label from the ManagedCluster at resolution time, with a hard-coded default as a fallback. This is why the 5 operator labels drive the Subscription without any policy code change.
+
+[source,role="execute"]
+----
+cat policies/stable/web-terminal/manifests/operator-install/kustomization.yaml
+----
+
+Find the `subscription:` block. Each field is a hub template expression of the form `{{hub index .ManagedClusterLabels "autoshift.io/web-terminal-<suffix>" | default "<value>" hub}}`. The `source:` field uses the disconnected mirror ternary to swap the catalog source when `autoshift.io/disconnected-mirror: 'true'` is set on the cluster.
+
+=== Render locally
+
+Install the toolchain if you have not done so in this session:
+
+[source,role="execute"]
+----
+make install-policy-generator
+----
+
+Then render the directory. The kustomize command is identical to what the Argo CD repo-server runs. The `--enable-alpha-plugins` flag activates the PolicyGenerator plugin. `--enable-helm` allows the nested helmChart in `manifests/operator-install/kustomization.yaml` to render. `--load-restrictor LoadRestrictionsNone` lets the chart reference the `components/` directory above the policy directory:
+
+[source,role="execute"]
+----
+KUSTOMIZE_PLUGIN_HOME=$PWD/.tools/kustomize-plugin .tools/kustomize build \
+  --enable-alpha-plugins --enable-helm --load-restrictor LoadRestrictionsNone \
+  policies/stable/web-terminal/
+----
+
+The output is several hundred lines of YAML. The `${...}` placeholders remain as literal strings because this local command does not perform the CMP substitution step. Filter to see the 3 resource kinds that the 4 input files became:
+
+[source,role="execute"]
+----
+KUSTOMIZE_PLUGIN_HOME=$PWD/.tools/kustomize-plugin .tools/kustomize build \
+  --enable-alpha-plugins --enable-helm --load-restrictor LoadRestrictionsNone \
+  policies/stable/web-terminal/ | grep '^kind:'
+----
+
+----
+kind: Placement
+kind: Policy
+kind: PlacementBinding
+----
+
+`helm template` does not work on this directory. The `docs/developer-guide.md` Quick Start section still shows `helm template policies/stable/...` as the validation command. That command fails on every PolicyGenerator directory in this repository. Use kustomize with the PolicyGenerator plugin as shown above.
+
+=== Verify
+
+Confirm the rendered output contains all 3 required resource types:
+
+[source,role="execute"]
+----
+KUSTOMIZE_PLUGIN_HOME=$PWD/.tools/kustomize-plugin .tools/kustomize build \
+  --enable-alpha-plugins --enable-helm --load-restrictor LoadRestrictionsNone \
+  policies/stable/web-terminal/ | grep '^kind:' | sort -u
+----
+
+----
+kind: Placement
+kind: PlacementBinding
+kind: Policy
+----
+
+== Exercise 3: Run the integration test and fix the label contract
+
+The integration test in `tools/` runs every policy in the repository through 5 pipeline stages. It is the same suite CI runs on every pull request.
+
+The 5 stages are:
+
+. *Helm template render*: renders every chart under `policies/`. Both PolicyGenerator directories and the 4 Helm holdouts are included. An empty render is a hard failure.
+. *Hub template resolution*: resolves `{{hub ... hub}}` expressions using synthetic cluster labels and ConfigMaps seeded from the `_example*.yaml` files. Any resolution error fails the test.
+. *Spoke template resolution*: resolves the remaining `{{ ... }}` managed-cluster-side expressions against the same seed resources.
+. *Resolved-YAML validation*: parses the fully-resolved output. Any malformed YAML or `<no value>` leak fails the test. A `<no value>` occurs when a hub template references a label that is absent from the seed.
+. *Label contract*: checks that every `autoshift.io/<key>` referenced in a policy template is declared as a key in at least 1 `_example*.yaml` file. A consumed but undeclared label fails CI with `Missing`.
+
+`tools/` is its own Go module, independent from the repository root. The test must run from inside that directory. Running `go test ./tools/internal/resolver/...` from the repo root fails with "directory prefix ... does not contain main module". The suite requires Go {go_version} or later.
+
+=== Run the test
+
+. Run the integration test from the repository root:
++
+[source,role="execute"]
+----
+cd tools && go test -tags integration ./internal/resolver/...
+----
++
+The test fails at the label contract stage. The `placement.yaml` you generated references `autoshift.io/web-terminal` in its Placement predicate. That key is not yet declared in `autoshift/values/clustersets/_example.yaml`, so stage 5 reports it as missing. The failure names the key, the policies that consume it, and exactly where to declare it:
++
+----
+--- FAIL: TestPipeline_EndToEnd (10.83s)
+    e2e_test.go:465: label contract violations — 1 key(s) consumed by policy
+        templates but missing from all _example*.yaml files:
+          autoshift.io/web-terminal (consumed by: web-terminal)
+
+          fix: add each missing label under a `labels:` block in
+               autoshift/values/clustersets/_example.yaml (for hub/cluster-set labels) or
+               autoshift/values/clusters/_example.yaml (for per-cluster labels)
+          once added, re-run: go test -tags integration -run TestPipeline_EndToEnd ./tools/internal/resolver/...
+FAIL
+FAIL	github.com/auto-shift/autoshiftv2/tools/internal/resolver	10.834s
+----
++
+[WARNING]
+====
+The re-run command printed in that message does not work as written. It uses a repository-root path, and `tools/` is a separate Go module, so running it from the root fails with `directory prefix tools/internal/resolver does not contain main module`.
+
+Use the `cd tools` form instead:
+
+[source,role="execute"]
+----
+cd tools && go test -tags integration -run TestPipeline_EndToEnd ./internal/resolver/...
+----
+====
++
+This is the label contract: any `autoshift.io/<key>` a policy consumes must be declared in `_example.yaml`. The reason is practical. The test seeds hub template resolution with the labels in that file. A missing declaration means the seed does not contain the key, hub template resolution produces `<no value>`, and the resolved manifest is invalid YAML. Requiring the declaration forces authors to document every label in the same place the test looks for it.
+
+. Return to the repository root before editing the values file:
++
+[source,role="execute"]
+----
+cd ..
+----
+
+=== Fix the label contract
+
+. Add the web-terminal labels to the label catalog. The `_example.yaml` file ends inside the `hubClusterSets.hub.labels` block, so the appended lines land at the correct indentation:
++
+[source,role="execute"]
+----
+cat >> autoshift/values/clustersets/_example.yaml << 'EOF'
+
+      # =======================================================================
+      # Web Terminal
+      # =======================================================================
+      web-terminal: 'false'
+      web-terminal-subscription-name: web-terminal
+      web-terminal-channel: fast
+      web-terminal-source: redhat-operators
+      web-terminal-source-namespace: openshift-marketplace
+EOF
+----
+
+. Confirm the labels appear in the file:
++
+[source,role="execute"]
+----
+grep 'web-terminal' autoshift/values/clustersets/_example.yaml
+----
++
+----
+      web-terminal: 'false'
+      web-terminal-subscription-name: web-terminal
+      web-terminal-channel: fast
+      web-terminal-source: redhat-operators
+      web-terminal-source-namespace: openshift-marketplace
+----
+
+. Run the test again:
++
+[source,role="execute"]
+----
+cd tools && go test -tags integration ./internal/resolver/...
+----
++
+----
+ok  	github.com/auto-shift/autoshiftv2/tools/internal/resolver	10.234s
+----
++
+All 5 stages pass.
+
+For a label that a policy intentionally consumes but that cannot have a sensible example value (for example, a label that varies per deployment and should not appear in the shared catalog), add it to `.github/label-lint-allowlist.yaml` under `missing_ok`. The allowlist keeps the contract strict for the rest of the catalog while exempting specific deviations.
+
+=== Auto-discovery
+
+Adding the directory under `policies/stable/` is all that is needed for Argo CD to pick it up. The ApplicationSet picks it up through its `policies/<tier>/*/kustomization.yaml` file generator. On the next sync, Argo CD creates a new Application named `autoshift-web-terminal` pointing at that directory. No manual registration is needed.
+
+=== Verify
+
+Confirm the test passes with the label declared:
+
+[source,role="execute"]
+----
+cd tools && go test -tags integration ./internal/resolver/...
+----
+
+----
+ok  	github.com/auto-shift/autoshiftv2/tools/internal/resolver	10.234s
+----
+
+== Troubleshooting
+
+=== Generator exits with "Policy directory already exists"
+
+*Issue:* `generate-operator-policy.sh` exits with `Error: Policy directory policies/stable/<name> already exists`.
+
+*Cause:* The generator creates the directory from scratch and exits if the destination already exists. It does not merge with or overwrite existing files.
+
+*Fix:* Remove the existing directory first, then re-run:
+
+[source,role="execute"]
+----
+rm -rf policies/stable/web-terminal/
+----
+
+Re-run the generator command from Exercise 1 with any corrected arguments.
+
+=== `kustomize build` exits with "no plugin found"
+
+*Issue:* The render command produces an error such as `no plugin found for apiVersion: policy.open-cluster-management.io/v1 kind: PolicyGenerator`.
+
+*Cause:* The PolicyGenerator plugin binary is not installed in `.tools/kustomize-plugin/`. Without `KUSTOMIZE_PLUGIN_HOME` pointing at that directory and the binary present there, kustomize cannot find the plugin.
+
+*Fix:* Install the toolchain and re-run the render:
+
+[source,role="execute"]
+----
+make install-policy-generator
+----
+
+=== Integration test exits with "directory prefix does not contain main module"
+
+*Issue:* Running `go test ./tools/internal/resolver/...` from the repository root prints `pattern ./tools/internal/resolver/...: directory prefix tools/internal/resolver does not contain main module`.
+
+*Cause:* `tools/` is its own Go module. When run from the repo root, there is no `go.mod` at the path you specified, so Go cannot locate the module.
+
+*Fix:* Run the test from inside `tools/`:
+
+[source,role="execute"]
+----
+cd tools && go test -tags integration ./internal/resolver/...
+----
+
+=== Test fails with `Missing` on a label you just declared
+
+*Issue:* The integration test still reports `Missing: autoshift.io/<key>` after you added the label to `_example.yaml`.
+
+*Possible causes:*
+
+- The label was added to a non-`_example*.yaml` file such as `hub.yaml` or `hub-minimal.yaml`. The label contract reads only files whose names match `_example*.yaml`.
+- The appended label does not have the correct 6-space indentation required to be inside the `hubClusterSets.hub.labels` block. A YAML structure error causes the key to fall outside the `labels:` mapping and go undetected.
+
+*Fix:* Verify the label appears in the right file at the right indentation:
+
+[source,role="execute"]
+----
+grep -n 'web-terminal:' autoshift/values/clustersets/_example.yaml
+----
+
+=== Test fails with `<no value>` in resolved output
+
+*Issue:* The test passes the label contract stage but fails at resolved-YAML validation with a message containing `<no value>`.
+
+*Cause:* A hub template expression references a label that is declared in `_example.yaml` but with an empty value. An expression such as `index .ManagedClusterLabels "autoshift.io/<key>"` with no `| default` fallback returns an empty interface when the label value is empty, and the template renders it as `<no value>`. The YAML parser rejects that output.
+
+*Fix:* Either add a `| default "<fallback>"` expression to the hub template, or set a non-empty example value for the label in `_example.yaml`.
+
+=== `kustomize build` produces output but the Policy object is empty
+
+*Issue:* The render succeeds but the Policy spec contains no templates. The `policy-generator-config.yaml` manifest path points to a directory or file that the PolicyGenerator could not read.
+
+*Cause:* The `manifests/operator-install/kustomization.yaml` path must be a Kustomize-renderable directory. If the `helmGlobals.chartHome` path relative to the nested kustomization does not resolve to the `components/` directory, the Helm chart render fails silently and PolicyGenerator wraps nothing.
+
+*Fix:* Confirm the `chartHome:` path traversal is correct. The generated path is `../../../../../components/`. Verify by listing:
+
+[source,role="execute"]
+----
+ls policies/stable/web-terminal/manifests/operator-install/../../../../..
+----
+
+----
+CHANGELOG.md  Makefile  README.md  autoshift  components  docs  policies  scripts  tools
+----
+
+`components` must appear in that output. If it does not, the chart path is miscounted.
+
+== Learning Outcomes
+
+By completing this module, you should now understand:
+
+* ✓ The generator script produces the correct PolicyGenerator directory structure, including the shared `components/operator-install` Helm chart wiring that every operator policy requires. Writing those files by hand omits that wiring and introduces formatting errors
+* ✓ A PolicyGenerator directory is rendered by kustomize with the PolicyGenerator plugin enabled, not by `helm template`. The local render retains the `${...}` substitution placeholders because the CMP sidecar performs that substitution in the live cluster before kustomize runs
+* ✓ The integration test runs from inside `tools/`, which is its own Go module. Running it from the repository root fails with a module path error
+* ✓ The integration test runs 5 stages: Helm template render, hub template resolution, spoke template resolution, resolved-YAML validation, and the label contract. Any `autoshift.io/<key>` a policy template consumes must be declared in `autoshift/values/clustersets/_example.yaml`. A consumed but undeclared key fails CI with `Missing`
+
+[.solve-button-placeholder]#solve-button-placeholder#
+
+[.validate-button-placeholder]#validate-button-placeholder#
