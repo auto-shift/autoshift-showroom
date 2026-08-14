@@ -14,7 +14,7 @@ This lab runs on a single hub cluster. Most of this module is conceptual. Sectio
 By the end of this module, you'll be able to:
 
 * Explain how gradual rollout, declarative cluster assignment, OpenShift cluster upgrades, and hub-of-hubs topology all reduce to clusterset membership
-* Describe how to roll a change out gradually and roll it back with `git revert`
+* Describe how to roll a change out gradually, and what reverting the commit does and does not undo
 * State the single Red Hat Advanced Cluster Management (ACM) constraint that explains hub-of-hubs topology
 
 == The common primitive
@@ -103,7 +103,22 @@ If you omit `versionTag`, the target clusterset is `<clusterSet><this deployment
 
 *Owner-guarded.* The policy only stamps a cluster that has no `autoshift.io/owning-namespace` label, or that is already owned by this deployment. 2 releases cannot fight over a cluster. A cluster owned by `as-0-0-1` will not be touched by `as-0-0-2`. Ownership transfers when the current owner stamps the new clusterset label. The `cluster-labels` policy then re-stamps `owning-namespace` to whichever deployment owns the destination clusterset.
 
-*Git revert is the rollback.* Each wave is a commit that bumps `versionTag` for N clusters. ArgoCD reconciles it. To roll back, run `git revert <wave-commit>`. The policy re-stamps the old clusterset and the cluster returns to the previous release. No manual remediation is needed.
+*Reverting the commit reverses the membership.* Each wave is a commit that bumps `versionTag` for N clusters. Argo CD reconciles it. `git revert <wave-commit>` re-stamps the previous clusterset label, and the cluster stops receiving the new clusterset's policies.
+
+[IMPORTANT]
+====
+Reverting the commit is not an undo button for everything the wave did.
+
+It reverses *declared intent*: clusterset membership, which Placements select the cluster, which policies apply to it going forward. That part is genuinely reversible, because a label is just a label.
+
+It does not reverse work that has already happened:
+
+* *An operator that upgraded stays upgraded.* Operator Lifecycle Manager does not downgrade a ClusterServiceVersion. Narrowing the `versions` allow-list back down does not move the operator backwards; getting an older version means removing the operator and installing it again.
+* *A cluster that was provisioned stays provisioned.* Removing a cluster's values file, or setting `createCluster: 'false'`, stops AutoShift managing that cluster. It does not destroy it. Module 10 covers what actually deprovisions a cluster.
+* *Configuration already written to a cluster stays written* unless a policy actively enforces the older value back.
+
+Plan a wave on the assumption that going forward is cheap and going backwards is work. That is an argument for small waves, not for avoiding them.
+====
 
 One constraint: `versionTag` must be in a values file that both releases read. If `as-0-0-1` sees `versionTag: '0.0.1'` and `as-0-0-2` sees `versionTag: '0.0.2'` for the same cluster, they stamp conflicting clusterset labels and the cluster flaps. Put per-cluster `clusterSet` and `versionTag` in a shared values file that both ArgoCD Applications include via `valueFiles`.
 
@@ -251,6 +266,80 @@ Tier 1 and tier 2 are 2 separate AutoShift bootstraps. Installing ACM on hub1 vi
 
 The same 11-character Application name ceiling applies at every tier. `policies-hub1` is 13 characters and fits. `policies-autoshift` is 18 characters and fits. Both are within the 20-character ceiling.
 
+== Where the values actually live
+
+Every operation in this module is a change to a values file. That raises a question the lab has been quietly deferring: where does that file live, and who applies it?
+
+In this lab you edited values inside a clone of `autoshiftv2` and ran `helm upgrade` yourself. Neither half of that is production.
+
+[IMPORTANT]
+====
+*Every production AutoShift deployment separates the policy code from the site configuration values passed to the top-level `autoshift` chart.*
+
+This is not a preference or an advanced option. It is the deployment model. `autoshiftv2` is code you consume; your clusters, clustersets, and the labels that describe them are configuration you own, and they live in a separate repository that Argo CD combines with the chart at render time.
+
+If you take one operational practice from this lab, take this one. Everything else in this module is a technique you may or may not need. This one applies to every deployment, from the first cluster onward.
+====
+
+=== Code and configuration are separate repositories
+
+`autoshiftv2` holds the policy charts and the ApplicationSet. Your values, which clusters exist and what each clusterset turns on, belong in a repository you own. The shipped `autoshift/values/` are reference profiles: copy one as a starting point, then diverge in your own repo.
+
+[cols="1,1",options="header"]
+|===
+|Belongs in `autoshiftv2` |Belongs in your values repo
+
+|`policies/**`, the charts
+|`global.yaml`, fleet-wide settings
+
+|`autoshift/templates/**`, the ApplicationSet
+|`clustersets/*.yaml`, profiles per clusterset
+
+|`autoshift/values/**`, reference profiles
+|`clusters/*.yaml`, per-cluster overrides
+
+|Anything you would send upstream as a pull request
+|Anything specific to your estate
+|===
+
+The reason is upgrades. Keep your site configuration inside a fork of `autoshiftv2` and every AutoShift upgrade is a rebase of your own edits against upstream changes. Keep it in your own repo and an upgrade is a `targetRevision` bump that leaves your configuration untouched.
+
+=== Argo CD stitches them with a multi-source Application
+
+Two sources. The values repo carries a `ref` and is fetched but never rendered. The chart source refers to it with `$ref/`:
+
+[source,yaml]
+----
+spec:
+  sources:
+    # 1) Values. `ref` names it; no `path`, nothing is rendered from this source.
+    - repoURL: https://gitlab.example.com/site/site-config.git
+      targetRevision: main
+      ref: siteValues
+
+    # 2) The chart, rendered with values pulled from source 1.
+    - repoURL: https://github.com/auto-shift/autoshiftv2.git
+      targetRevision: main
+      path: autoshift
+      helm:
+        valueFiles:
+          - $siteValues/global.yaml
+          - $siteValues/clustersets/hub.yaml
+          - $siteValues/clusters/spoke1.yaml
+----
+
+Compare that `valueFiles` list with the `-f` arguments you have been passing all lab. They are the same list. The difference is who supplies them: Argo CD reading your repo, rather than you typing them.
+
+The `ref` source must be a git repository. You cannot `$ref` a Helm or OCI source. This needs Argo CD 2.8 or later, which OpenShift GitOps 1.21 comfortably provides.
+
+=== What changes in practice
+
+Nobody runs `helm upgrade`. A fleet change is a pull request against your values repo. Merging it is the deployment, Argo CD reconciles, and the commit is the audit trail of who changed what and when.
+
+Reverting a commit restores the previous declared state, with the limits described above: it moves clusters between clustersets and changes which policies apply, but it does not downgrade an operator or destroy a cluster.
+
+`docs/external-values-repo.md` covers the merge semantics, the constraints that bite, and how to migrate an existing deployment.
+
 == Every operation is a label in a values file
 
 In Module 2 you traced the full chain from a values file entry to a label on a `ManagedCluster`: the values file fed a ConfigMap, the `cluster-labels` policy read the ConfigMap and stamped the label, the Placement matched the label, the PlacementDecision bound the policy, and the policy configured the cluster.
@@ -272,7 +361,7 @@ You set a value in git. ArgoCD reconciles it. A ConfigMap changes. A label chang
 By completing this module, you should now understand:
 
 * ✓ Gradual rollout, declarative cluster assignment, OpenShift upgrades, and hub-of-hubs topology all reduce to clusterset membership. Moving a cluster into or out of a clusterset is the single mechanism that activates, migrates, and decommissions fleet-wide operations
-* ✓ A declarative rollout is a series of commits on `config.versionTag` in a cluster's values file. The `cluster-set-assignment` policy is owner-guarded and stamps the clusterset label. `git revert` is the rollback because each wave is a commit
+* ✓ A declarative rollout is a series of commits on `config.versionTag` in a cluster's values file. The `cluster-set-assignment` policy is owner-guarded and stamps the clusterset label. Reverting a wave commit reverses clusterset membership, but it does not downgrade an operator or destroy a provisioned cluster
 * ✓ The single ACM constraint (a cluster is managed by exactly 1 ACM) determines why a spoke hub cannot configure itself, why its configuration must come from the hub above it, and why the policies that execute on a spoke hub use cluster-wide label-selected lookups instead of namespace-scoped ones
 
 [.solve-button-placeholder]#solve-button-placeholder#

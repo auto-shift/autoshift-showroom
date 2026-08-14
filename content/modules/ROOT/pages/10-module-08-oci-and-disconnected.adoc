@@ -201,8 +201,11 @@ Do not set `odf-version` or `quay-version`. Setting a version pin feeds that val
 [source,role="execute"]
 ----
 helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
   -f autoshift/values/global.yaml \
-  -f autoshift/values/clustersets/hub-minimal.yaml
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 === Step 3: Wait for NooBaa
@@ -285,8 +288,11 @@ Apply and wait for the repo server rollout:
 [source,role="execute"]
 ----
 helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
   -f autoshift/values/global.yaml \
-  -f autoshift/values/clustersets/hub-minimal.yaml
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 [source,role="execute"]
@@ -326,8 +332,11 @@ Switch AutoShift to OCI mode by setting `autoshiftOciRegistry: true` and pointin
 [source,role="execute"]
 ----
 helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
   -f autoshift/values/global.yaml \
   -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml \
   --set autoshiftOciRegistry=true \
   --set "autoshiftOciRepo=oci://$QUAY_ROUTE/autoshift/policies"
 ----
@@ -395,8 +404,11 @@ Apply:
 [source,role="execute"]
 ----
 helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
   -f autoshift/values/global.yaml \
-  -f autoshift/values/clustersets/hub-minimal.yaml
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 === Step 2: Observe the catalog source flip
@@ -530,8 +542,11 @@ Revert the disconnected labels before moving to the next module to avoid leaving
 [source,role="execute"]
 ----
 helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
   -f autoshift/values/global.yaml \
-  -f autoshift/values/clustersets/hub-minimal.yaml
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 == Troubleshooting

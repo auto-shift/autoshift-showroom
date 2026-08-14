@@ -199,6 +199,19 @@ This exercise uses the Helm dev path: you render the `autoshift/` chart from you
 
 [IMPORTANT]
 ====
+*This is a lab convenience. Do not run a fleet this way.*
+
+You are about to edit values inside a clone of `autoshiftv2` and push changes with `helm upgrade` from a laptop. That is fast for learning, and it is the wrong shape for production twice over.
+
+It puts your site configuration inside someone else's code repository, so every AutoShift upgrade becomes a merge conflict. And it makes a person with a terminal the deployment mechanism, so there is no review trail and no reconciliation: whatever you last typed is the state.
+
+In production the values live in a repository you own, and Argo CD renders the chart against them with a multi-source Application. Nobody runs `helm upgrade` by hand. Module 9 covers the pattern, and `docs/external-values-repo.md` is the full reference.
+
+Every `helm upgrade` you run in this lab stands in for a commit to your own values repo.
+====
+
+[IMPORTANT]
+====
 The release name must be 11 characters or fewer. The ApplicationSet derives the policy namespace from it as `policies-<release-name>`. AutoShift's naming validator rejects any namespace that exceeds the limit. The name `autoshift` is 9 characters and is safe. The Helm default `release-name` is 21 characters and will fail the check.
 ====
 

@@ -11,7 +11,7 @@ This page covers workshop logistics: schedule options, what the lab cluster prov
 
 The workshop runs in 10 sequential modules.
 Each module builds on the cluster state left by the previous one, so the order matters.
-The full session runs approximately 4 hours 20 minutes.
+The full session runs approximately 4 hours.
 
 Module 3 is short but structurally important. It declares the 2 things in this lab that take real time, a container registry and an OpenShift cluster on Amazon Web Services (AWS), and then leaves them to build while you work through modules 4 to 9. Module 8 uses the registry once it is ready, and module 10 collects the finished cluster.
 
@@ -29,19 +29,19 @@ That is why the expensive work does not appear as a long wait anywhere in the sc
 
 |2
 |Label flow: from values file to ManagedCluster label to Placement to Policy
-|25 min
+|20 min
 
 |3
-|Declare the slow work: registry labels, FIPS SSH key, source secret, cluster values file
+|Start the long-running builds: registry labels, FIPS SSH key, source secret, cluster values file
 |20 min
 
 |4
-|Enable a feature: Node Feature Discovery, version pinning, teardown
+|Enable a feature: Node Feature Discovery, version allow-lists, teardown
 |30 min
 
 |5
 |Config blocks and overrides: rendered-config ConfigMap, per-cluster beats clusterset
-|25 min
+|20 min
 
 |6
 |Operate and troubleshoot: diagnostics, dry run mode, deliberate breakage
@@ -53,7 +53,7 @@ That is why the expensive work does not appear as a long wait anywhere in the sc
 
 |8
 |OCI and disconnected: publish to the registry built in module 3, disconnected mirror labels
-|35 min
+|30 min
 
 |9
 |Fleet operations capstone: gradual rollout, upgrades, hub-of-hubs topology

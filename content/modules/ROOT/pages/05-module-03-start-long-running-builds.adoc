@@ -1,6 +1,6 @@
-= Declare the slow work
+= Start the long-running builds
 include::partial$_attributes.adoc[]
-:navtitle: Module 3: Declare the slow work
+:navtitle: Module 3: Start the long-running builds
 
 Module 2 ended with `local-cluster` assigned to the `hub` clusterset and the full label flow running. Everything you have done so far completes in seconds.
 

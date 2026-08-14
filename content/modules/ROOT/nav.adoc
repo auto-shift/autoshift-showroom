@@ -5,7 +5,7 @@
 
 * xref:03-module-01-bootstrap.adoc[Module 1: Bootstrap AutoShift]
 * xref:04-module-02-label-flow.adoc[Module 2: Trace the label flow]
-* xref:05-module-03-declare-slow-work.adoc[Module 3: Declare the slow work]
+* xref:05-module-03-start-long-running-builds.adoc[Module 3: Start the long-running builds]
 * xref:06-module-04-enable-a-feature.adoc[Module 4: Enable a feature with labels alone]
 * xref:07-module-05-config-and-overrides.adoc[Module 5: Config blocks and per-cluster overrides]
 * xref:08-module-06-operate-and-troubleshoot.adoc[Module 6: Operate and troubleshoot]

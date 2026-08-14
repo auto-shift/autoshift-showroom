@@ -140,7 +140,7 @@ Apply, remembering all 4 values files:
 
 [source,role="execute"]
 ----
-helm upgrade autoshift ./autoshift \
+helm upgrade --install autoshift ./autoshift \
   -n openshift-gitops \
   -f autoshift/values/global.yaml \
   -f autoshift/values/clustersets/hub-minimal.yaml \

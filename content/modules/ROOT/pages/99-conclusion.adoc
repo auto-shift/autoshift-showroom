@@ -44,7 +44,7 @@ Setting 2 labels, `disconnected-mirror: 'true'` and `mirror-catalog-suffix: 'mir
 
 Module 9 showed that gradual rollout, declarative cluster assignment, OpenShift upgrades, and hub-of-hubs topology all reduce to the same primitive: a cluster moves between clustersets.
 
-`versionedClusterSets: true` creates versioned clustersets so 2 AutoShift releases run side by side with no shared clusters and no conflict. Committing `config.versionTag` in a cluster's values file causes the `cluster-set-assignment` policy to stamp the new clusterset label. That policy is owner-guarded: it will not touch a cluster owned by a different deployment. Each wave is a commit. `git revert` is the rollback.
+`versionedClusterSets: true` creates versioned clustersets so 2 AutoShift releases run side by side with no shared clusters and no conflict. Committing `config.versionTag` in a cluster's values file causes the `cluster-set-assignment` policy to stamp the new clusterset label. That policy is owner-guarded: it will not touch a cluster owned by a different deployment. Each wave is a commit. Reverting one reverses clusterset membership; it does not downgrade operators or destroy clusters that the wave brought up.
 
 The upgrade policy set enforces `openshift-version` on every cluster in a target clusterset through 4 chained policies. A semver guard prevents downgrade requests. A dependency chain blocks the enforce policy from firing if the target version is invalid or unavailable. The ArgoCD Application reaches Healthy only when the completion gate confirms the upgrade has finished.
 

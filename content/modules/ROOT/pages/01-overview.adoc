@@ -132,14 +132,15 @@ each step of the mechanism before moving to the next.
 |Module |Topic |Duration
 
 |1 |Bootstrap ACM, OpenShift GitOps, and AutoShift |~30 min
-|2 |Trace the label flow from values file to cluster |~25 min
-|3 |Enable, pin, and disable Node Feature Discovery |~30 min
-|4 |Add a `config:` block and override it per cluster |~25 min
-|5 |Operate and troubleshoot a fleet |~30 min
-|6 |Author a PolicyGenerator policy |~30 min
-|7 |OCI publishing and disconnected environments |~60 min
-|8 |Fleet operations capstone |~20 min
-|9 |Provision an AWS spoke cluster |~50 min
+|2 |Trace the label flow from values file to cluster |~20 min
+|3 |Start the long-running builds: a registry and an AWS cluster |~20 min
+|4 |Enable NFD and control which versions it may run |~30 min
+|5 |Add a `config:` block and override it per cluster |~20 min
+|6 |Operate and troubleshoot a fleet |~30 min
+|7 |Author a PolicyGenerator policy |~30 min
+|8 |OCI publishing and disconnected environments |~30 min
+|9 |Fleet operations capstone |~20 min
+|10 |Your spoke cluster joined the fleet |~15 min
 |===
 
-Total estimated time: approximately 4 hours 20 minutes.
+Total estimated time: approximately 4 hours 5 minutes.

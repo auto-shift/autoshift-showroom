@@ -21,7 +21,7 @@ flowchart TD
 By the end of this module, you'll be able to:
 
 * Enable an operator across a clusterset using only the 5-label contract
-* Pin an operator to a specific CSV version and explain why the OperatorPolicy and its Subscription report different approval settings
+* Constrain which CSVs an operator may run, and explain why a list of versions describes an upgrade path rather than a freeze
 * Disable an operator and describe what the policy leaves behind
 
 == Exercise 1: Enable Node Feature Discovery
@@ -106,7 +106,9 @@ tail -8 autoshift/values/clustersets/hub-minimal.yaml
 helm upgrade --install autoshift ./autoshift \
   -n openshift-gitops \
   -f autoshift/values/global.yaml \
-  -f autoshift/values/clustersets/hub-minimal.yaml
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 . The cluster-labels Application re-renders the `cluster-set.hub` ConfigMap with the new labels. Wait for it to sync:
@@ -200,17 +202,40 @@ policy-nfd-instance-deploy    enforce   Compliant   3m
 policy-nfd-operator-install   enforce   Compliant   3m
 ----
 
-== Exercise 2: Pin the operator version
+== Exercise 2: Control which versions an operator may run
 
-When you add a `-version` label, AutoShift feeds that value into 2 fields on the OperatorPolicy: the Subscription's `startingCSV`, and a `versions` allow-list. The allow-list is the part worth understanding, because it is not obvious from the label name.
+`versions` on the OperatorPolicy is an **allow-list**, not a pin. It says which ClusterServiceVersions (CSVs) this operator is permitted to run. That distinction is the whole point, and it is what makes controlled operator upgrades possible.
+
+AutoShift fills that list from 1 of 2 sources:
+
+[cols="1,3,2",options="header"]
+|===
+|Mode |How you set it |What lands in `versions`
+
+|Label
+|`<component>-version` label
+|A list of exactly 1 CSV
+
+|Config
+|`config.<component>.versions`, a list, plus an optional `startingCSV`
+|Every CSV you listed
+|===
+
+The repository states it plainly in the version-resolution comment in each operator's `kustomization.yaml`: *"the list says what's ALLOWED, not where to START"*.
+
+A single-entry list is therefore just the degenerate case. It happens to freeze the operator because there is nowhere else to go. List 2 or more CSVs and you have described an upgrade path: Operator Lifecycle Manager (OLM) moves the operator up to the highest entry in the list, and stops there.
+
+`startingCSV` is a separate question from `versions`. It says where to begin, not what is permitted. In config mode you can leave it empty and let OLM pick the starting point while still constraining where the operator may end up.
+
+=== Why the Subscription says Manual
 
 The mechanism spans 2 objects, and it is worth being precise about which field lives where.
 
-On the OperatorPolicy, `upgradeApproval` stays `Automatic`. That field accepts only `None` or `Automatic`; there is no `Manual` value to set. Pinning is expressed as the `versions` allow-list instead.
+On the OperatorPolicy, `upgradeApproval` stays `Automatic`. That field accepts only `None` or `Automatic`; there is no `Manual` value to set.
 
-On the Subscription that ACM manages, the effect is different. When the allow-list is populated, ACM holds the Subscription at `installPlanApproval: Manual` so that Operator Lifecycle Manager cannot upgrade past the permitted set. You will see `Manual` there even though the policy says `Automatic`.
+On the Subscription that ACM manages, you will see `installPlanApproval: Manual`. That is not a request for you to approve anything by hand. It is how ACM takes approval away from OLM so that it can approve InstallPlans itself, and only for versions inside the allow-list. Upgrades within the list still happen automatically; upgrades outside it never get approved.
 
-Both are true at the same time. If you go looking for the pin and check only the policy, it looks like nothing was pinned. Check the Subscription as well.
+So `Manual` here means "ACM decides", not "nothing will upgrade". If you go looking for the pin and check only the policy, it looks like nothing was set. Check both objects.
 
 Read the current CSV name from the cluster, then use it as the version label value.
 
@@ -255,7 +280,9 @@ tail -3 autoshift/values/clustersets/hub-minimal.yaml
 helm upgrade --install autoshift ./autoshift \
   -n openshift-gitops \
   -f autoshift/values/global.yaml \
-  -f autoshift/values/clustersets/hub-minimal.yaml
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 . Wait for the NFD Argo CD Application to sync:
@@ -321,6 +348,47 @@ nfd.4.22.0-202506191600
 
 The value matches the CSV you captured, and it matches the `node-feature-discovery-version` label you added to `hub-minimal.yaml`.
 
+=== Describe an upgrade path instead of a freeze
+
+Switch from label mode to config mode and give the operator somewhere to go. Config mode uses the `config:` block rather than a label, which is the subject of Module 5, so treat this as a preview.
+
+. List the CSVs the catalog actually offers, newest first:
++
+[source,role="execute"]
+----
+oc get packagemanifest nfd -n openshift-marketplace \
+  -o jsonpath='{.status.channels[0].entries[*].name}' | tr ' ' '\n' | head -4
+----
+
+. Pick 2 adjacent versions. Remove the `-version` label you added above, and declare an allow-list instead. Note this goes under a `config:` key alongside `labels:`, not inside it:
++
+[source,yaml]
+----
+    config:
+      node-feature-discovery:
+        versions:
+          - 'nfd.4.22.0-<older>'
+          - 'nfd.4.22.0-<newer>'
+        startingCSV: 'nfd.4.22.0-<older>'
+----
+
+. Apply, then read the allow-list back off the policy:
++
+[source,role="execute"]
+----
+oc get operatorpolicy -A \
+  -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.versions}{"\n"}{end}' | grep nfd
+----
++
+Both CSVs appear. The operator starts at `startingCSV` and OLM moves it up to the highest entry, then stops. Add a third CSV later and you have extended the path by 1 step, in git, reviewable.
+
+[NOTE]
+====
+This is how a fleet does operator upgrades with AutoShift. You do not approve InstallPlans on individual clusters. You widen the allow-list in a values file, and every cluster in the clusterset moves within the bounds you described.
+
+Leaving `startingCSV` empty lets OLM choose where to begin while still constraining where the operator may end up, which is usually what you want for a clusterset of existing clusters.
+====
+
 == Exercise 3: Disable Node Feature Discovery
 
 Setting `node-feature-discovery: 'false'` changes the label value on `local-cluster`. The Placement predicate, which matches only clusters where the label is `'true'`, stops selecting `local-cluster`. ACM deletes the PlacementDecision and removes the replicated NFD policies from the `local-cluster` namespace.
@@ -353,7 +421,9 @@ grep 'node-feature-discovery:' autoshift/values/clustersets/hub-minimal.yaml
 helm upgrade --install autoshift ./autoshift \
   -n openshift-gitops \
   -f autoshift/values/global.yaml \
-  -f autoshift/values/clustersets/hub-minimal.yaml
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 . After the cluster-labels policy reconciles, the `autoshift.io/node-feature-discovery` label updates to `'false'`:

@@ -168,6 +168,27 @@ policy-selfmanagedhub-labels  enforce              Compliant
 
 == Exercise 2: Dry run mode as the fleet-wide safety switch
 
+Start this one before you read about it. Dry run does not take effect instantly: the ApplicationSet re-renders every policy, and Argo CD has to re-sync more than 50 Applications, which takes several minutes to work through the fleet.
+
+So flip it on now and read while it propagates. That is the same pattern Module 3 used for the registry and the cluster, applied at a smaller scale.
+
+. Set dry run to `true` and apply:
++
+[source,role="execute"]
+----
+sed -i 's/dryRun: false/dryRun: true/' autoshift/values/global.yaml
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
+----
+
+Now read on. You will check the result at the end of the exercise.
+
+=== What dry run actually changes
+
 `autoshift.dryRun` lives in `autoshift/values/global.yaml` and defaults to `false`. Setting it to `true` changes 2 things at once through the ApplicationSet template.
 
 First, the ApplicationSet passes `REMEDIATION=inform` to the PolicyGenerator Composable More Plugin (CMP) sidecar (`autoshift/templates/autoshift-app-set.yaml:99`). The PolicyGenerator substitutes `$\{REMEDIATION}` into the `remediationAction` field of every policy it renders. Inform mode means ACM reports violations but does not enforce them.
@@ -176,87 +197,35 @@ Second, the ApplicationSet sets `prune: false` and `selfHeal: false` on the Argo
 
 Combined, those 2 changes mean the fleet observes without acting. Reach for dry run before any change to a shared clusterset that will touch every cluster at once. Apply in inform mode first. Review what would change. Then flip dry run off and apply again.
 
-. Set dry run to `true`:
-+
-[source,role="execute"]
-----
-sed -i 's/dryRun: false/dryRun: true/' autoshift/values/global.yaml
-----
+=== Check that it propagated
 
-. Confirm the change:
-+
-[source,role="execute"]
-----
-grep 'dryRun' autoshift/values/global.yaml
-----
-+
-----
-  dryRun: true
-----
+By now the re-sync should have worked through most of the fleet. Count how many policies are in each mode:
 
-. Apply. The ApplicationSet re-renders every PolicyGenerator policy with `REMEDIATION=inform`:
-+
-[source,role="execute"]
-----
-helm upgrade --install autoshift ./autoshift \
-  -n openshift-gitops \
-  -f autoshift/values/global.yaml \
-  -f autoshift/values/clustersets/hub-minimal.yaml \
-  -f autoshift/values/clusters/local-cluster.yaml
-----
-
-. Wait for the Applications to sync. The policy objects are re-created with `remediationAction: inform`:
-+
-[source,role="execute"]
-----
-oc get applications.argoproj.io -n openshift-gitops \
-  -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status \
-  | head -10
-----
-+
-----
-NAME                             SYNC    HEALTH
-autoshift-cluster-labels         Synced  Healthy
-autoshift-policy-foundation      Synced  Healthy
-autoshift-user-workload-monitoring Synced Healthy
-...
-----
-
-. Check the REMEDIATION ACTION column on hub policies. PolicyGenerator-managed policies now show `inform`:
-+
 [source,role="execute",subs="attributes"]
 ----
 oc get policy -n {policy_namespace} \
-  -o custom-columns=NAME:.metadata.name,REMEDIATION:.spec.remediationAction,COMPLIANCE:.status.compliant
+  --no-headers -o custom-columns=R:.spec.remediationAction | sort | uniq -c
 ----
-+
-[subs="attributes"]
-----
-NAME                          REMEDIATION  COMPLIANCE
-policy-selfmanagedhub-labels  inform       Compliant
-policy-managedcluster-labels  inform       Compliant
-policy-uwm-enable             inform       Compliant
-----
-+
-The `inform` value means every cluster is now watched, not enforced. A NonCompliant result under dry run tells you what would change when you flip back to `enforce`.
 
-. Restore dry run to `false`:
-+
+Expect the `inform` count to climb over several minutes rather than flip all at once. A handful of policies are authored as `inform` regardless, so the count does not start at 0.
+
+Turn it back off before continuing. Module 6's later exercises need enforcement:
+
 [source,role="execute"]
 ----
 sed -i 's/dryRun: true/dryRun: false/' autoshift/values/global.yaml
-----
-
-. Re-apply to return to enforce mode:
-+
-[source,role="execute"]
-----
 helm upgrade --install autoshift ./autoshift \
   -n openshift-gitops \
   -f autoshift/values/global.yaml \
   -f autoshift/values/clustersets/hub-minimal.yaml \
-  -f autoshift/values/clusters/local-cluster.yaml
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
+
+[NOTE]
+====
+The revert propagates at the same pace as the change did. Give it a few minutes before assuming a policy is stuck.
+====
 
 === Verify
 
@@ -309,7 +278,8 @@ helm upgrade --install autoshift ./autoshift \
   -n openshift-gitops \
   -f autoshift/values/global.yaml \
   -f autoshift/values/clustersets/hub-minimal.yaml \
-  -f autoshift/values/clusters/local-cluster.yaml
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 . Wait for the NFD Application to sync:
@@ -373,7 +343,8 @@ helm upgrade --install autoshift ./autoshift \
   -n openshift-gitops \
   -f autoshift/values/global.yaml \
   -f autoshift/values/clustersets/hub-minimal.yaml \
-  -f autoshift/values/clusters/local-cluster.yaml
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 === Diagnose using the toolkit
@@ -468,7 +439,8 @@ helm upgrade --install autoshift ./autoshift \
   -n openshift-gitops \
   -f autoshift/values/global.yaml \
   -f autoshift/values/clustersets/hub-minimal.yaml \
-  -f autoshift/values/clusters/local-cluster.yaml
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 === Verify

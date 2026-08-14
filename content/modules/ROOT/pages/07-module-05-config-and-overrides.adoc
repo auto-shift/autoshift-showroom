@@ -150,7 +150,9 @@ tail -12 autoshift/values/clustersets/hub-minimal.yaml
 helm upgrade --install autoshift ./autoshift \
   -n openshift-gitops \
   -f autoshift/values/global.yaml \
-  -f autoshift/values/clustersets/hub-minimal.yaml
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 . `helm upgrade` updates the `autoshift-cluster-config-maps` Application. Argo CD detects the change and re-renders the `cluster-set-config.hub` ConfigMap with the UWM config block. Wait for the Application to sync:
@@ -250,7 +252,8 @@ helm upgrade --install autoshift ./autoshift \
   -n openshift-gitops \
   -f autoshift/values/global.yaml \
   -f autoshift/values/clustersets/hub-minimal.yaml \
-  -f autoshift/values/clusters/local-cluster.yaml
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
 . The `autoshift-cluster-config-maps` Application now creates a `managed-cluster-config.local-cluster` ConfigMap containing only the fields you overrode. Wait for the Application to sync:
