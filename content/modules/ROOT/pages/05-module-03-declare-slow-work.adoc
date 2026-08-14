@@ -131,7 +131,29 @@ The policy set reads credentials from a single source secret named `aws-creds` i
 
 === SSH key generation
 
-The values file sets `fips: true` in the `aws:` block. FIPS mode constrains which SSH key algorithms the OpenShift installer will accept. Only Rivest-Shamir-Adleman (RSA) and Elliptic Curve Digital Signature Algorithm (ECDSA) are allowed. Ed25519 is not.
+The `aws:` block has a `fips` field. This lab sets it to `false`, and the reason is worth understanding before you generate a key.
+
+When `fips: true`, the OpenShift installer constrains which SSH key algorithms it will accept. Only Rivest-Shamir-Adleman (RSA) and Elliptic Curve Digital Signature Algorithm (ECDSA) are allowed. Ed25519 is not.
+
+There is a second constraint that is easy to miss, and it is why this lab uses `false`. Installing a FIPS cluster requires the *installer host* to be running in FIPS mode as well, and the installer host here is the Hive provision pod on your hub. If the hub is not FIPS-enabled, the provision fails immediately:
+
+----
+fips: Forbidden: target cluster is in FIPS mode, enable FIPS mode on the host
+----
+
+Hive retries up to `installAttemptsLimit` times and then sets `ProvisionStopped`. Nothing about that message mentions the hub, so it is a confusing failure to hit for the first time on a real cluster.
+
+Check your hub before enabling it:
+
+[source,role="execute"]
+----
+oc debug node/$(oc get nodes -o jsonpath='{.items[0].metadata.name}') -q -- \
+  chroot /host cat /proc/sys/crypto/fips_enabled
+----
+
+`0` means the hub is not in FIPS mode, so leave `fips: false`. `1` means you can set `fips: true`, and then the SSH key algorithm matters.
+
+You will generate an ECDSA key regardless. It is correct practice, it costs nothing, and it means the values file works unchanged if you later enable FIPS on a hub that supports it.
 
 This is not an AutoShift constraint. It is the same restriction the OpenShift installation documentation states for FIPS clusters. If you generate an ed25519 key and then provision a FIPS cluster, the install fails during bootstrap validation. The error is not obvious: Hive retries, the provision pod exits, and the failure message does not name the key algorithm directly. Generate the key deliberately rather than reaching for the ed25519 default.
 
@@ -243,22 +265,37 @@ helm upgrade autoshift ./autoshift \
 
 A cluster that joins a clusterset inherits that clusterset's labels, and therefore its policies. So the clusterset you assign the spoke to decides what it becomes.
 
-AutoShift ships a full `managed.yaml` profile, but it enables a large set of operators. Build a minimal one instead, the same way `hub-minimal.yaml` is a minimal hub. Note `self-managed: 'false'`: this is a spoke, not a hub that manages itself.
+AutoShift ships a full `managed.yaml` profile, but it enables a large set of operators. Build a minimal one instead, the same way `hub-minimal.yaml` is a minimal hub.
+
+Note what is *not* in this file. There is no `self-managed` label. That label is only valid under `hubClusterSets`, where it registers a hub as a self-managed cluster in its own ACM, and the chart rejects it here:
+
+----
+'self-managed' is only valid on a hubClusterSets entry
+----
+
+You do not need to declare that this is a spoke. AutoShift derives `autoshift.io/cluster-type` (`hub` or `spoke`) from which bucket the clusterset is defined in, so putting it under `managedClusterSets` is the declaration.
 
 Include Node Feature Discovery. You are declaring it here, on a cluster that does not exist yet, and never touching that cluster again. Module 10 checks whether it arrived.
 
-. Create the minimal managed clusterset:
+. Read the version your lab cluster is running. Do not copy a version out of this guide: lab environments are provisioned at whatever release is current, and `openshift-version` is the version AutoShift treats as desired, so it should match the fleet you are actually running:
++
+[source,role="execute"]
+----
+OCP_VERSION=$(oc get clusterversion version -o jsonpath='{.status.desired.version}')
+echo "$OCP_VERSION"
+----
+
+. Create the minimal managed clusterset. The heredoc delimiter is unquoted so `${OCP_VERSION}` is substituted as the file is written:
 +
 [source,role="execute",subs="attributes"]
 ----
-cat > autoshift/values/clustersets/managed-minimal.yaml << 'EOF'
+cat > autoshift/values/clustersets/managed-minimal.yaml << EOF
 # Minimal managed (spoke) clusterset for the lab.
 # A cluster assigned to this clusterset inherits these labels.
 managedClusterSets:
   managed:
     labels:
-      openshift-version: '{ocp_version}'
-      self-managed: 'false'
+      openshift-version: '${OCP_VERSION}'
 
       ### Node Feature Discovery, declared for a cluster that does not exist yet
       node-feature-discovery: 'true'
@@ -308,7 +345,7 @@ clusters:
         createCluster: 'true'
         platform: aws
         baseDomain: {aws_base_domain}
-        openshiftVersion: '{ocp_version}'
+        openshiftVersion: 'REPLACE_WITH_YOUR_OCP_VERSION'
         openshiftChannel: stable
 
         pullSecretRef:
@@ -325,7 +362,7 @@ clusters:
           name: 'aws-creds'
           key: 'ssh-publickey'
           namespace: 'cluster-install-secrets'
-        fips: true
+        fips: false
         networkType: OVNKubernetes
 
         controlPlane:
@@ -352,7 +389,25 @@ Field-by-field explanation:
 
 `platform: aws` routes the install to the `policy-cluster-install-aws` policy chain, which creates a Hive `ClusterDeployment` rather than a SiteConfig `ClusterInstance`.
 
-`openshiftVersion` sets the release the cluster installs at. It feeds the `ClusterImageSet` lookup. The value above comes from the `{ocp_version}` attribute defined in `_attributes.adoc`.
+`openshiftVersion` sets the release the new cluster installs at, and it feeds the `ClusterImageSet` lookup. Replace `REPLACE_WITH_YOUR_OCP_VERSION` with the version you read from your own cluster a moment ago:
+
+[source,role="execute"]
+----
+sed -i "s/REPLACE_WITH_YOUR_OCP_VERSION/${OCP_VERSION}/" \
+  autoshift/values/clusters/spoke-aws-1.yaml
+grep 'openshiftVersion' autoshift/values/clusters/spoke-aws-1.yaml
+----
+
+Installing the spoke at the same release as the hub keeps the lab simple. It is not a requirement: a fleet routinely runs mixed versions, and Module 9 covers how AutoShift moves clusters between them.
+
+[NOTE]
+====
+Do not hardcode a version from a document into a values file, here or anywhere else in AutoShift.
+
+`openshift-version` on a clusterset is the *desired* version. It drives operator-catalog alignment, and the `openshift-upgrade` policy treats it as an upgrade target: a cluster opted in to upgrades moves when its clusterset's `openshift-version` is higher than the cluster's current version. A number copied from a guide is a number nobody chose deliberately.
+
+Note that `hub-minimal.yaml` ships with its own `openshift-version` value, which may be older than the cluster you are running. It is below your current version, so the upgrade policy takes no action, but it is worth knowing it is there rather than assuming it matches.
+====
 
 `pullSecretRef` uses the object form rather than a plain string name because the `aws-creds` secret stores the pull secret under the custom key `pullSecret`, not the default `.dockerconfigjson`. The policy reads the key by name via a hub template lookup.
 
@@ -364,7 +419,30 @@ Field-by-field explanation:
 
 `aws.sshKeyRef` reads `ssh-publickey` from the same secret. The public key goes into the install-config so nodes accept SSH connections from the installer.
 
-`aws.fips: true` sets FIPS mode on the cluster. This is why you generated an ECDSA key rather than an ed25519 key.
+`aws.controlPlane.replicas: 1` with `workers.replicas: 0` provisions single-node OpenShift (SNO). This is not just to save money.
+
+A multi-availability-zone cluster creates 1 NAT gateway per zone, and each one consumes an Elastic IP. AWS sandbox accounts cap Elastic IPs, commonly at 5, and your hub cluster already holds several. Ask for a 3-zone spoke and the install fails partway through network creation:
+
+----
+api error AddressLimitExceeded: The maximum number of addresses has been reached.
+----
+
+That failure arrives after Hive has already created a virtual private cloud and subnets, so it looks like a networking bug rather than a quota. SNO provisions into a single zone with 1 NAT gateway and 1 Elastic IP, which is the smallest footprint a spoke can have.
+
+[IMPORTANT]
+====
+SNO reduces the requirement to 1 Elastic IP. It does not create one out of nothing.
+
+If your hub is itself a multi-zone cluster in the same sandbox account, it may already hold every Elastic IP the quota allows, in which case even a single-node spoke fails with the same `AddressLimitExceeded` error. Hive retries until `installAttemptsLimit` and then sets `ProvisionStopped`.
+
+Check before you start. In the AWS console, open *EC2 -> Elastic IPs* and compare the count against your account's quota under *Service Quotas -> EC2 -> EC2-VPC Elastic IPs*. If there is no headroom, release an unused address or skip the provisioning exercises: modules 4 to 9 do not depend on them.
+
+Stop a stuck provision cleanly by setting `createCluster: 'false'` and re-applying. Hive runs an uninstall job and releases whatever it did create.
+====
+
+Size the control plane accordingly: a single node runs the control plane and all workloads, so `m5.2xlarge` is the practical minimum.
+
+`aws.fips: false` because this hub is not running in FIPS mode, and the installer refuses to build a FIPS cluster from a non-FIPS host. The ECDSA key you generated is what you would need if you set this to `true` on a FIPS-enabled hub.
 
 The `controlPlane` and `workers` blocks set EC2 instance types and root volume sizes. These are the defaults from the example file.
 

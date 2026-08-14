@@ -117,7 +117,18 @@ true
 *Destroy the cluster now.* Leaving it running keeps billing. This step is not optional.
 ====
 
-Set `createCluster` to `'false'` in the cluster values file. Open `autoshift/values/clusters/spoke-aws-1.yaml` and change the field:
+Teardown takes 2 steps, and the order matters. Doing either one alone leaves you with a running cluster.
+
+[IMPORTANT]
+====
+`createCluster: 'false'` does **not** destroy anything.
+
+Read the policy and you can see why: every cluster-install manifest is wrapped in `{{- if ... eq "true" }}`, so the flag only controls whether the policy *emits* the ClusterDeployment. There is no deletion behaviour in the policy at all. Set it to `'false'` on its own and the ClusterDeployment stays exactly where it is, the cluster keeps running, and the bill keeps growing.
+
+Deleting the ClusterDeployment on its own does not work either. While `createCluster` is still `'true'`, the policy is in `enforce` and simply recreates it.
+====
+
+*Step 1. Stop the policy managing the cluster.* Set `createCluster` to `'false'` in `autoshift/values/clusters/spoke-aws-1.yaml`:
 
 [source,yaml]
 ----
@@ -125,7 +136,7 @@ Set `createCluster` to `'false'` in the cluster values file. Open `autoshift/val
         createCluster: 'false'
 ----
 
-Apply:
+Apply, remembering all 4 values files:
 
 [source,role="execute"]
 ----
@@ -133,11 +144,30 @@ helm upgrade autoshift ./autoshift \
   -n openshift-gitops \
   -f autoshift/values/global.yaml \
   -f autoshift/values/clustersets/hub-minimal.yaml \
-  -f autoshift/values/clustersets/managed.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
   -f autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
-Hive begins deprovisioning: EC2 instances, NAT gateways, Elastic IPs, Route 53 records, and the VPC are all removed. Deprovisioning takes roughly 10-15 minutes. Watch the `ClusterDeployment` until it is gone:
+Wait until the change reaches the rendered config. Until it does, the policy will still recreate anything you delete:
+
+[source,role="execute",subs="attributes"]
+----
+oc get configmap spoke-aws-1.rendered-config -n {policy_namespace} \
+  -o jsonpath='{.data.config}' | grep createCluster
+----
+
+----
+    createCluster: "false"
+----
+
+*Step 2. Delete the ClusterDeployment.* This is what actually triggers the destroy. Hive runs an uninstall job that removes the EC2 instances, NAT gateways, Elastic IPs, Route 53 records, and the virtual private cloud:
+
+[source,role="execute"]
+----
+oc delete clusterdeployment spoke-aws-1 -n spoke-aws-1
+----
+
+Watch it deprovision. This takes roughly 10 to 15 minutes:
 
 [source,role="execute"]
 ----

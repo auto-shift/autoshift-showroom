@@ -30,7 +30,7 @@ Prior ACM or OpenShift GitOps experience is not required, but the lab moves at a
 
 == Prerequisites
 
-* An OpenShift {ocp_version} cluster with cluster-admin access
+* An OpenShift cluster with cluster-admin access. Validated on {ocp_version}
 * Helm 3.x installed on your workstation
 * The `oc` CLI configured and authenticated
 * Git and standard shell tools (`make`, `curl`)
@@ -47,10 +47,10 @@ The key versions in this lab:
 
 [cols="2,2",options="header"]
 |===
-|Component |Version
+|Component |Version this lab was validated on
 
 |OpenShift
-|{ocp_version}
+|{ocp_version} (your cluster may be newer)
 
 |ACM channel
 |{acm_channel}

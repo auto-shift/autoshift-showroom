@@ -2,7 +2,7 @@
 include::partial$_attributes.adoc[]
 :navtitle: Module 2: Label flow
 
-Module 1 ended with AutoShift deployed and the hub cluster assigned to no clusterset. Every policy exists. No policy applies to any cluster. This module traces why, then closes every link in the chain.
+Module 1 ended with AutoShift deployed and every policy present on the hub. No policy applies to any cluster. This module traces why, then closes every link in the chain.
 
 The full path from a values file label to a running policy looks like this:
 
@@ -15,7 +15,7 @@ flowchart TD
   D -->|"PlacementBinding"| E["Policy<br/>evaluates Compliant"]
 ....
 
-The chain breaks at the very first link when a cluster has no clusterset assignment. Exercise 1 confirms the break. Exercise 2 sets the assignment and traces each hop forward. Exercise 3 proves the chain runs in reverse when a label is removed.
+The chain breaks at the very first link, because `local-cluster` is not in a clusterset AutoShift manages. Exercise 1 confirms the break. Exercise 2 fixes the assignment and traces each hop forward. Exercise 3 proves the chain runs in reverse when a label is removed.
 
 == Learning objectives
 
@@ -27,11 +27,11 @@ By the end of this module, you'll be able to:
 
 == Exercise 1: Observe the null state
 
-The cluster-labels Argo CD Application has already rendered the `cluster-set.hub` ConfigMap from your values file. The Placement exists. The Policy exists. But `local-cluster` has no `cluster.open-cluster-management.io/clusterset` label, so it belongs to no ManagedClusterSet and the Placement selects nothing.
+The cluster-labels Argo CD Application has already rendered the `cluster-set.hub` ConfigMap from your values file. The Placement exists. The Policy exists. But `local-cluster` is not in the `hub` clusterset, so the Placement selects nothing.
 
 Read each broken link in order.
 
-. Confirm that `local-cluster` has no clusterset assignment. An empty response means the label is absent:
+. Check which clusterset `local-cluster` belongs to:
 +
 [source,role="execute"]
 ----
@@ -40,8 +40,22 @@ oc get managedcluster local-cluster \
 ----
 +
 ----
-(empty)
+default
 ----
++
+[NOTE]
+====
+`local-cluster` is not unassigned. ACM puts every cluster it registers into the `default` ManagedClusterSet automatically.
+
+That still leaves the chain broken, which is the point of this exercise. Your values file defines a clusterset named `hub`, so AutoShift renders a `cluster-set.hub` ConfigMap and nothing for `default`. The cluster belongs to a clusterset AutoShift knows nothing about, so no `autoshift.io/*` labels are stamped and no AutoShift policy applies.
+
+List them to see all 3. `default` and `global` come from ACM. `hub` was created by the `policy-foundation` chart when you deployed AutoShift in Module 1:
+
+[source,role="execute"]
+----
+oc get managedclusterset
+----
+====
 
 . Confirm that no `autoshift.io/*` labels are stamped on `local-cluster`:
 +
@@ -110,17 +124,28 @@ The `COMPLIANCE STATE` column is blank. This is the expected state before any cl
 
 In Red Hat Advanced Cluster Management, a cluster joins a ManagedClusterSet when it carries the `cluster.open-cluster-management.io/clusterset` label. Set that label now and trace what follows.
 
-. Assign `local-cluster` to the `hub` ManagedClusterSet:
+. Move `local-cluster` from the `default` clusterset to `hub`. `--overwrite` is required because the label already has a value:
 +
 [source,role="execute"]
 ----
 oc label managedcluster local-cluster \
-  cluster.open-cluster-management.io/clusterset=hub
+  cluster.open-cluster-management.io/clusterset=hub --overwrite
 ----
 +
 ----
 managedcluster.cluster.open-cluster-management.io/local-cluster labeled
 ----
++
+[NOTE]
+====
+Without `--overwrite` this fails:
+
+----
+error: 'cluster.open-cluster-management.io/clusterset' already has a value (default), and --overwrite is false
+----
+
+`oc label` refuses to change an existing label unless you say so explicitly. You are not adding a label here, you are reassigning the cluster from one clusterset to another.
+====
 
 . Read the `cluster-set.hub` ConfigMap. The `data.labels` field is a JSON object of every label from the `hub` section of `hub-minimal.yaml`, with the `autoshift.io/` prefix applied. This ConfigMap was already here before the clusterset assignment. The cluster-labels policy reads all ConfigMaps labeled `autoshift.io/cluster-labels=""` in the policy namespace. For each ManagedCluster, it matches the ConfigMap whose name corresponds to the cluster's clusterset value and stamps the labels:
 +
@@ -280,8 +305,21 @@ helm upgrade --install autoshift ./autoshift \
 +
 [source,role="execute"]
 ----
-oc get application autoshift-cluster-labels -n openshift-gitops
+oc get applications.argoproj.io autoshift-cluster-labels -n openshift-gitops
 ----
++
+[NOTE]
+====
+Note `applications.argoproj.io`, not just `application`.
+
+Two custom resource definitions on this cluster are both named `applications`: ACM's `app.k8s.io` Application and Argo CD's `argoproj.io` Application. A bare `oc get application <name>` resolves to ACM's and fails with a misleading error:
+
+----
+Error from server (NotFound): applications.app.k8s.io "autoshift-cluster-labels" not found
+----
+
+The Argo CD Application is there. You asked the wrong API group. Qualify it, or use the `apps` short name that only Argo CD registers.
+====
 +
 ----
 NAME                       SYNC STATUS   HEALTH STATUS
@@ -359,7 +397,7 @@ The `lab-test` line does not appear. The `owning` labels remain.
 
 === Placement shows no clusters selected after clusterset assignment
 
-*Issue:* After running `oc label managedcluster local-cluster cluster.open-cluster-management.io/clusterset=hub`, no PlacementDecision appears.
+*Issue:* After running `oc label managedcluster local-cluster cluster.open-cluster-management.io/clusterset=hub --overwrite`, no PlacementDecision appears.
 
 *Diagnosis:* Verify the label was applied and that a ManagedClusterSet named `hub` exists:
 
@@ -374,7 +412,7 @@ oc get managedclusterset hub
 
 [source,role="execute"]
 ----
-oc get application autoshift-policy-foundation -n openshift-gitops
+oc get applications.argoproj.io autoshift-policy-foundation -n openshift-gitops
 ----
 
 === The cluster-labels policy stays NonCompliant
@@ -392,7 +430,7 @@ oc describe policy policy-selfmanagedhub-labels -n {policy_namespace} | tail -30
 
 [source,role="execute"]
 ----
-oc get application autoshift-cluster-labels -n openshift-gitops
+oc get applications.argoproj.io autoshift-cluster-labels -n openshift-gitops
 ----
 
 If the sync status is `OutOfSync`, wait for auto-sync or trigger a refresh in the Argo CD console.
@@ -407,7 +445,7 @@ If the sync status is `OutOfSync`, wait for auto-sync or trigger a refresh in th
 
 [source,role="execute"]
 ----
-oc get application autoshift-cluster-labels -n openshift-gitops
+oc get applications.argoproj.io autoshift-cluster-labels -n openshift-gitops
 ----
 
 If the Application is already `Synced` and the label persists after about 60 seconds, force policy re-evaluation:

@@ -33,7 +33,7 @@ The ApplicationSet creates 1 Argo CD Application per policy directory. If the Ap
 
 [source,role="execute"]
 ----
-oc get application autoshift-cluster-labels -n openshift-gitops
+oc get applications.argoproj.io autoshift-cluster-labels -n openshift-gitops
 ----
 
 ----
@@ -147,7 +147,7 @@ Confirm both the Application and the Policy are healthy before moving on.
 
 [source,role="execute"]
 ----
-oc get application autoshift-cluster-labels -n openshift-gitops
+oc get applications.argoproj.io autoshift-cluster-labels -n openshift-gitops
 ----
 
 ----
@@ -316,7 +316,7 @@ helm upgrade --install autoshift ./autoshift \
 +
 [source,role="execute"]
 ----
-oc get application autoshift-node-feature-discovery -n openshift-gitops
+oc get applications.argoproj.io autoshift-node-feature-discovery -n openshift-gitops
 ----
 +
 ----
@@ -384,7 +384,7 @@ Apply the diagnostic chain from exercise 1 to the NFD policy. Start at the top.
 +
 [source,role="execute"]
 ----
-oc get application autoshift-node-feature-discovery -n openshift-gitops
+oc get applications.argoproj.io autoshift-node-feature-discovery -n openshift-gitops
 ----
 +
 ----
@@ -544,7 +544,7 @@ oc describe policy <policy-name> -n {policy_namespace} | tail -30
 
 === Application is Synced but the Policy does not appear in the hub namespace
 
-*Issue:* `oc get application autoshift-<name> -n openshift-gitops` shows `Synced Healthy`, but `oc get policy -n policies-autoshift | grep <name>` returns nothing.
+*Issue:* `oc get applications.argoproj.io autoshift-<name> -n openshift-gitops` shows `Synced Healthy`, but `oc get policy -n policies-autoshift | grep <name>` returns nothing.
 
 *Common cause:* The Placement predicate selects no cluster, so ACM has no target and reports no compliance. The Policy object exists but its status section is empty. Check the PlacementDecision:
 
@@ -612,7 +612,7 @@ oc logs -n open-cluster-management-agent-addon \
 
 === Application shows OutOfSync but helm template looks correct
 
-*Issue:* `oc get application autoshift-<name> -n openshift-gitops` shows `OutOfSync` after a `helm upgrade`.
+*Issue:* `oc get applications.argoproj.io autoshift-<name> -n openshift-gitops` shows `OutOfSync` after a `helm upgrade`.
 
 *Diagnosis:* Argo CD compares the rendered manifests from the git source against the live cluster state. An OutOfSync Application means the live resource differs from the rendered output. Describe the Application for the specific diff:
 

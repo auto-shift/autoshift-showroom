@@ -51,7 +51,7 @@ node-feature-discovery-source-namespace: openshift-marketplace
 
 [NOTE]
 ====
-The commented version in `hub.yaml` names a 4.18-era ClusterServiceVersion (CSV) and is illustrative only. It shows the format, `nfd.<ocp-minor>.<patch>-<timestamp>`, not a value to copy. Your cluster runs OpenShift {ocp_version}, so the CSV you see in Exercise 2 will differ. Always read the CSV name off the cluster rather than copying an example.
+The commented version in `hub.yaml` names a 4.18-era ClusterServiceVersion (CSV) and is illustrative only. It shows the format, `nfd.<ocp-minor>.<patch>-<timestamp>`, not a value to copy. Your cluster runs a newer release, so the CSV you see in Exercise 2 will differ. Always read the CSV name off the cluster rather than copying an example.
 ====
 
 You write the same 5 labels into `hub-minimal.yaml` with the enable flag set to `'true'`.
@@ -113,7 +113,7 @@ helm upgrade --install autoshift ./autoshift \
 +
 [source,role="execute"]
 ----
-oc get application autoshift-cluster-labels -n openshift-gitops
+oc get applications.argoproj.io autoshift-cluster-labels -n openshift-gitops
 ----
 +
 ----
@@ -262,7 +262,7 @@ helm upgrade --install autoshift ./autoshift \
 +
 [source,role="execute"]
 ----
-oc get application autoshift-node-feature-discovery -n openshift-gitops
+oc get applications.argoproj.io autoshift-node-feature-discovery -n openshift-gitops
 ----
 +
 ----
@@ -444,7 +444,7 @@ oc get managedclustersetbinding -n {policy_namespace}
 
 [source,role="execute"]
 ----
-oc get application autoshift-policy-foundation -n openshift-gitops
+oc get applications.argoproj.io autoshift-policy-foundation -n openshift-gitops
 ----
 
 Wait for `Synced` and `Healthy`, then re-check the PlacementDecision.

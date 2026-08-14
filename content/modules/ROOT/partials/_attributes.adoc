@@ -9,7 +9,12 @@
 :user: {ssh_user}
 :bastion_host: {bastion_public_hostname}
 
-// Product versions, verified against the autoshiftv2 values files
+// Product versions, verified against the autoshiftv2 values files.
+//
+// ocp_version is the release this lab was VALIDATED on. It is used in prose
+// only. Never write it into a values file: lab environments are provisioned
+// at whatever release is current, and openshift-version is the version
+// AutoShift treats as desired. Module 3 reads the real value off the cluster.
 :ocp_version: 4.22.8
 :acm_channel: release-2.17
 :gitops_channel: gitops-1.21

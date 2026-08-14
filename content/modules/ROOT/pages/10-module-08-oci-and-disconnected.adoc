@@ -71,7 +71,9 @@ Run the render. `VERSION` is stamped into each rendered chart's `Chart.yaml`. Fo
 make render-policy-charts VERSION=0.0.0-dev
 ----
 
-The target iterates every PG directory under `policies/` (directories containing `policy-generator-config.yaml` but no `Chart.yaml`) and writes a Helm chart for each one into `.helm-charts/policies/`.
+The target iterates every PG directory under `policies/` (directories containing `policy-generator-config.yaml` but no `Chart.yaml`) and writes a packaged Helm chart for each one into `.helm-charts/policies/` as `<name>-<version>.tgz`.
+
+The 4 Helm holdouts are not in that output. They are already Helm charts in the source tree, so `render-policy-charts` has nothing to convert; `make package-charts` handles them separately at release time.
 
 List the rendered output:
 
@@ -97,11 +99,13 @@ The source tree contains `kustomization.yaml`, `policy-generator-config.yaml`, `
 +
 [source,role="execute"]
 ----
-ls .helm-charts/policies/advanced-cluster-management/
+tar tzf .helm-charts/policies/advanced-cluster-management-0.0.0-dev.tgz | head
 ----
 +
 ----
-Chart.yaml  templates  values.yaml
+advanced-cluster-management/Chart.yaml
+advanced-cluster-management/values.yaml
+advanced-cluster-management/templates/
 ----
 +
 The rendered output is a standard Helm chart. ArgoCD pulls this from the registry and runs `helm template` on it. No kustomize, no PolicyGenerator plugin, no CMP sidecar is involved.
@@ -110,14 +114,12 @@ The rendered output is a standard Helm chart. ArgoCD pulls this from the registr
 +
 [source,role="execute"]
 ----
-grep '^version:' .helm-charts/policies/advanced-cluster-management/Chart.yaml
+helm show chart .helm-charts/policies/advanced-cluster-management-0.0.0-dev.tgz | grep '^version:'
 ----
 +
 ----
 version: 0.0.0-dev
 ----
-
-The 4 Helm holdouts (`openshift-gitops`, `policy-foundation`, `cluster-labels`, `cluster-config-maps`) are already Helm charts in the source tree. The `render-policy-charts` target processes only PG directories. The holdouts pass through as-is.
 
 === Dry run push (Fallback B)
 
@@ -145,14 +147,14 @@ Confirm the render produced Helm chart output:
 
 [source,role="execute"]
 ----
-test -f .helm-charts/policies/advanced-cluster-management/Chart.yaml && echo OK
+test -f .helm-charts/policies/advanced-cluster-management-0.0.0-dev.tgz && echo OK
 ----
 
 ----
 OK
 ----
 
-Confirm the 4 Helm holdouts were also packaged. They appear under `.helm-charts/policies/` as `.tgz` archives if you ran `make package-charts`, or as unpacked directories after `render-policy-charts`:
+Count the rendered charts. `render-policy-charts` writes each one as a packaged `.tgz`, not an unpacked directory, and the version you passed is part of the filename:
 
 [source,role="execute"]
 ----

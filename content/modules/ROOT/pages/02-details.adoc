@@ -113,7 +113,7 @@ The decision criteria are in the module 3 warning, and the exact fallback steps 
 
 === Cluster
 
-* OpenShift {ocp_version}, self-managed as `local-cluster`
+* An OpenShift cluster, self-managed as `local-cluster`. Validated on {ocp_version}; lab environments are provisioned at whatever release is current
 * No separate spoke cluster is required for modules 1 through 9. Module 3 provisions one on AWS and module 10 verifies and removes it
 * Red Hat Advanced Cluster Management installed during module 1 from channel `{acm_channel}`
 * OpenShift GitOps installed during module 1 from channel `{gitops_channel}`
@@ -203,7 +203,9 @@ Run `oc login --server={api_url}` with the credentials from the workshop environ
 oc get clusterversion version -o jsonpath='{.status.desired.version}{"\n"}'
 ----
 
-Expected: a version string beginning with `{ocp_version}`.
+Note the version you get. Module 3 uses it when declaring the managed clusterset and the spoke cluster, so it is read from the cluster rather than copied from this guide.
+
+This lab was validated on {ocp_version}. A newer release is expected and fine.
 
 === Cluster operator health
 
