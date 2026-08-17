@@ -207,7 +207,23 @@ oc get policy -n {policy_namespace} \
   --no-headers -o custom-columns=R:.spec.remediationAction | sort | uniq -c
 ----
 
-Expect the `inform` count to climb over several minutes rather than flip all at once. A handful of policies are authored as `inform` regardless, so the count does not start at 0.
+----
+   1 <none>
+ 179 inform
+----
+
+Expect the `inform` count to climb over several minutes rather than flip all at once. On a hub of this size it takes about 6 minutes to work through the fleet, moving roughly like this:
+
+----
+t+0s     146 enforce    29 inform
+t+2m     104 enforce    75 inform
+t+4m      38 enforce   141 inform
+t+6m       0 enforce   179 inform
+----
+
+Two things about that output are worth noting. The `inform` count does not start at 0, because a handful of policies are authored as `inform` regardless: the `*-test` policies that check state without changing it. And 1 policy reports `<none>`, because `policy-cluster-configs` sets `remediationAction` on its inner ConfigurationPolicy templates rather than on the root Policy object.
+
+If the count stops climbing and leaves a few policies at `enforce`, see the troubleshooting entry below before assuming dry run is broken.
 
 Turn it back off before continuing. Module 6's later exercises need enforcement:
 
@@ -224,7 +240,9 @@ helm upgrade --install autoshift ./autoshift \
 
 [NOTE]
 ====
-The revert propagates at the same pace as the change did. Give it a few minutes before assuming a policy is stuck.
+Give the revert the same few minutes the change took, and watch the `enforce` count climb back.
+
+If it stalls part-way and Applications start reporting `Unknown`, that is not dry run misbehaving. It means the Argo CD repo server or application controller is undersized for the fleet, and a full re-render is the load that exposes it. The troubleshooting section below covers how to tell the difference.
 ====
 
 === Verify
@@ -493,6 +511,76 @@ This pattern appears in every config policy that depends on an operator: configu
 If `policy-nfd-instance-deploy` is stuck in Pending after the operator is installed, check whether `policy-nfd-operator-install` has reached Compliant on the targeted cluster. A single NonCompliant cluster on the prerequisite holds the dependent policy for that cluster only.
 
 == Troubleshooting
+
+=== Dry run stalls with a few policies still on enforce
+
+*Issue:* After setting `autoshift.dryRun: true`, the `inform` count climbs and then plateaus, leaving a small number of policies on `enforce` indefinitely.
+
+*Diagnosis:* Find which policies stayed behind, then look at the Argo CD Application that owns them:
+
+[source,role="execute",subs="attributes"]
+----
+oc get policy -n {policy_namespace} \
+  -o custom-columns=NAME:.metadata.name,R:.spec.remediationAction --no-headers | awk '$2=="enforce"'
+oc get applications.argoproj.io -n openshift-gitops --no-headers | awk '$2!="Synced"'
+----
+
+An Application stuck at `Unknown` is the cause. Read its condition:
+
+[source,role="execute"]
+----
+oc get applications.argoproj.io <app-name> -n openshift-gitops \
+  -o jsonpath='{.status.conditions}{"\n"}'
+----
+
+*Common cause 1: the components are undersized.* A fleet-wide toggle asks Argo CD to re-render every PolicyGenerator Application at once. Two things break under that load, and both are silent until it happens:
+
+[source,role="execute"]
+----
+oc get pods -n openshift-gitops | grep -E 'application-controller|repo-server'
+oc adm top pod -n openshift-gitops | grep application-controller
+----
+
+An application controller in `CrashLoopBackOff` with `OOMKilled` in its last state is the giveaway. Compare its memory usage against its limit: on a default hub the controller tracks every policy AutoShift ships and settles above 2Gi, so a 2Gi limit cannot hold it. Raise it through `config.gitops.infra.controller` in your values file:
+
+[source,yaml]
+----
+    config:
+      gitops:
+        infra:
+          controller:
+            limits:
+              cpu: 2000m
+              memory: 4096Mi
+          repo:
+            limits:
+              cpu: 2000m
+              memory: 2048Mi
+----
+
+A StatefulSet does not resize a running pod, so delete the controller pod once the ArgoCD CR shows the new limit.
+
+*Common cause 2: a cached manifest-generation failure* in the PolicyGenerator CMP sidecar:
+
+----
+Manifest generation error (cached): CMP processing failed for application
+"autoshift-cert-manager": error sending file to cmp-server: EOF
+(stream ctx err: context canceled)
+----
+
+The word `cached` is the important part. The generation attempt timed out once, Argo CD cached the error, and it keeps serving that cached failure instead of retrying. The sidecar itself is healthy: check for restarts and you will find none.
+
+*Fix:* Force a hard refresh so Argo CD discards the cached result and regenerates:
+
+[source,role="execute"]
+----
+oc annotate applications.argoproj.io <app-name> -n openshift-gitops \
+  argocd.argoproj.io/refresh=hard --overwrite
+----
+
+The remaining policies flip within about 15 seconds. The same annotation is the general remedy for any Application stuck at `Unknown` with a cached generation error, not just during dry run.
+
+
 
 === Policy shows NonCompliant immediately after a label change
 

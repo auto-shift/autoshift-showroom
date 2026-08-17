@@ -58,7 +58,7 @@ oc get clusterdeployment spoke-aws-1 -n spoke-aws-1 \
 
 When the install finishes, Hive marks the `ClusterDeployment` as installed and creates the `ManagedCluster` object. ACM imports the cluster. Then the label flow runs automatically:
 
-. The `cluster-labels` policy reads the `cluster-set.managed` ConfigMap (built from `managed.yaml`) and stamps every label from that clusterset onto `spoke-aws-1`.
+. The `cluster-labels` policy reads the `cluster-set.managed` ConfigMap (built from the `managed-minimal.yaml` you wrote in Module 3) and stamps every label from that clusterset onto `spoke-aws-1`.
 . Placements that select the `managed` clusterset now match `spoke-aws-1`.
 . Every policy you enabled in earlier modules that targets `managed` is replicated to `spoke-aws-1` and enforced.
 
@@ -70,8 +70,8 @@ oc get managedcluster spoke-aws-1 -w
 ----
 
 ----
-NAME          HUB ACCEPTED   JOINED   AVAILABLE   AGE
-spoke-aws-1   true           True     True        42m
+NAME          HUB ACCEPTED   MANAGED CLUSTER URLS                                  JOINED   AVAILABLE   AGE
+spoke-aws-1   true           https://api.spoke-aws-1.<base-domain>:6443            True     True        42m
 ----
 
 Once `JOINED: True`, confirm the clusterset label was stamped:
@@ -90,11 +90,40 @@ Inspect the full set of labels the `cluster-labels` policy stamped:
 
 [source,role="execute"]
 ----
-oc get managedcluster spoke-aws-1 \
-  -o jsonpath='{range .metadata.labels}{@}{"\n"}{end}'
+oc get managedcluster spoke-aws-1 -o json | grep '"autoshift\.io/'
 ----
 
-You see all the `autoshift.io/*` labels from the `managed` clusterset values file, plus `autoshift.io/owning-namespace` and `autoshift.io/owning-deployment` stamped automatically by the policy. These labels are the label flow from Module 2, running on a cluster that did not exist 40 minutes ago.
+----
+            "autoshift.io/cluster-type": "spoke",
+            "autoshift.io/node-feature-discovery": "true",
+            "autoshift.io/node-feature-discovery-channel": "stable",
+            "autoshift.io/node-feature-discovery-source": "redhat-operators",
+            "autoshift.io/node-feature-discovery-source-namespace": "openshift-marketplace",
+            "autoshift.io/node-feature-discovery-subscription-name": "nfd",
+            "autoshift.io/openshift-version": "4.22.8",
+            "autoshift.io/owning-deployment": "autoshift",
+            "autoshift.io/owning-namespace": "policies-autoshift",
+----
+
+Every label from the `managed` clusterset values file is there, plus `autoshift.io/owning-namespace` and `autoshift.io/owning-deployment` stamped automatically by the policy, and `autoshift.io/cluster-type: spoke` derived from the fact that the clusterset was declared under `managedClusterSets`.
+
+This is the label flow from Module 2, running on a cluster that did not exist 40 minutes ago.
+
+Confirm the policies followed the labels:
+
+[source,role="execute"]
+----
+oc get policy -n spoke-aws-1
+----
+
+----
+NAME                                             REMEDIATION ACTION   COMPLIANCE STATE   AGE
+policies-autoshift.policy-dns-tolerations        enforce              Compliant          123m
+policies-autoshift.policy-nfd-instance-deploy    enforce              Compliant          158m
+policies-autoshift.policy-nfd-operator-install   enforce              Compliant          158m
+----
+
+`policy-nfd-operator-install` reporting `Compliant` means Node Feature Discovery is installed and running on the spoke. You declared it in Module 3 against a cluster that did not exist, and never touched that cluster again.
 
 === Verify
 

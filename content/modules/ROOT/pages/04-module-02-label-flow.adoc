@@ -88,21 +88,37 @@ oc get placement placement-policy-selfmanagedhub-labels -n {policy_namespace}
 ----
 +
 ----
-NAME                                     AGE
-placement-policy-selfmanagedhub-labels   5m
+NAME                                     SUCCEEDED   REASON                       SELECTEDCLUSTERS
+placement-policy-selfmanagedhub-labels   False       AllManagedClusterSetsEmpty
 ----
-
-. Confirm that no PlacementDecision exists. ACM creates a PlacementDecision only when a Placement selects at least 1 cluster:
 +
+The Placement states the break directly. `SUCCEEDED` is `False`, `SELECTEDCLUSTERS` is empty, and `REASON` is `AllManagedClusterSetsEmpty`: the `hub` ManagedClusterSet this Placement targets has no members.
+
+. Read the PlacementDecision. The object exists, but it carries no decisions:
++
+[source,role="execute",subs="attributes"]
+----
+oc get placementdecision -n {policy_namespace} \
+  -l cluster.open-cluster-management.io/placement=placement-policy-selfmanagedhub-labels \
+  -o jsonpath='{.items[0].status.decisions}{"\n"}'
+----
++
+----
+(no output)
+----
++
+[NOTE]
+====
+ACM creates a PlacementDecision object for every Placement, whether or not it selects anything. Listing the objects therefore tells you nothing about selection:
+
 [source,role="execute",subs="attributes"]
 ----
 oc get placementdecisions -n {policy_namespace} \
   -l cluster.open-cluster-management.io/placement=placement-policy-selfmanagedhub-labels
 ----
-+
-----
-No resources found in policies-autoshift namespace.
-----
+
+That returns a decision object right now, before any cluster is assigned. Selection lives in `status.decisions`, which is empty until a cluster matches.
+====
 
 === Verify
 
@@ -114,8 +130,8 @@ oc get policy policy-selfmanagedhub-labels -n {policy_namespace}
 ----
 
 ----
-NAME                             REMEDIATION ACTION   COMPLIANCE STATE   AGE
-policy-selfmanagedhub-labels     enforce                                 5m
+NAME                           REMEDIATION ACTION   COMPLIANCE STATE   AGE
+policy-selfmanagedhub-labels                                           5m
 ----
 
 The `COMPLIANCE STATE` column is blank. This is the expected state before any clusterset assignment.
@@ -160,10 +176,12 @@ data:
   labels: '{"autoshift.io/acm-channel":"release-2.17","autoshift.io/acm-source":
     "redhat-operators","autoshift.io/acm-source-namespace":"openshift-marketplace",
     "autoshift.io/acm-subscription-name":"advanced-cluster-management",
-    "autoshift.io/gitops":"true","autoshift.io/gitops-channel":"gitops-1.21",
+    "autoshift.io/cluster-type":"hub","autoshift.io/gitops":"true",
+    "autoshift.io/gitops-channel":"gitops-1.21",
+    "autoshift.io/gitops-disable-default-argocd":"true",
     "autoshift.io/gitops-source":"redhat-operators","autoshift.io/gitops-source-namespace":
     "openshift-marketplace","autoshift.io/gitops-subscription-name":"openshift-gitops-operator",
-    "autoshift.io/openshift-version":"4.22.8","autoshift.io/self-managed":"true"}'
+    "autoshift.io/openshift-version":"4.20.29","autoshift.io/self-managed":"true"}'
   values: '...'
 kind: ConfigMap
 metadata:
@@ -173,7 +191,7 @@ metadata:
   namespace: policies-autoshift
 ----
 
-. Run this command a few times over the next 30 seconds until the `autoshift.io/*` labels appear on `local-cluster`. The cluster-labels policy needs a reconcile cycle to detect the new clusterset assignment:
+. Read the labels now stamped on `local-cluster`. These appear within a second or two of the clusterset assignment, because the policy's `evaluationInterval` is `watch`: it reacts to the change rather than polling on a timer:
 +
 [source,role="execute"]
 ----
@@ -185,16 +203,25 @@ oc get managedcluster local-cluster -o json | grep '"autoshift\.io/'
             "autoshift.io/acm-source": "redhat-operators",
             "autoshift.io/acm-source-namespace": "openshift-marketplace",
             "autoshift.io/acm-subscription-name": "advanced-cluster-management",
+            "autoshift.io/cluster-type": "hub",
             "autoshift.io/gitops": "true",
             "autoshift.io/gitops-channel": "gitops-1.21",
+            "autoshift.io/gitops-disable-default-argocd": "true",
             "autoshift.io/gitops-source": "redhat-operators",
             "autoshift.io/gitops-source-namespace": "openshift-marketplace",
             "autoshift.io/gitops-subscription-name": "openshift-gitops-operator",
-            "autoshift.io/openshift-version": "4.22.8",
+            "autoshift.io/openshift-version": "4.20.29",
             "autoshift.io/owning-deployment": "autoshift",
             "autoshift.io/owning-namespace": "policies-autoshift",
             "autoshift.io/self-managed": "true",
 ----
++
+[NOTE]
+====
+`autoshift.io/openshift-version` is `4.20.29` because that is the value committed in `hub-minimal.yaml`, not the version this cluster is running. The label records the version AutoShift treats as desired for mirroring and for cluster installs. Nothing in this deployment enforces it against the hub's own ClusterVersion, so the mismatch is inert here. Module 3 sets it deliberately for the spoke cluster you provision.
+
+`autoshift.io/cluster-type` is injected by the chart at render time rather than authored in the values file, which is why it appears here without being in the labels block you read earlier.
+====
 +
 [NOTE]
 ====
@@ -209,8 +236,8 @@ oc get placement placement-policy-selfmanagedhub-labels -n {policy_namespace}
 ----
 +
 ----
-NAME                                     AGE
-placement-policy-selfmanagedhub-labels   7m
+NAME                                     SUCCEEDED   REASON                  SELECTEDCLUSTERS
+placement-policy-selfmanagedhub-labels   True        AllDecisionsScheduled   1
 ----
 
 . Read the PlacementDecision. ACM creates this object when the Placement selects at least 1 cluster:
@@ -222,9 +249,11 @@ oc get placementdecisions -n {policy_namespace} \
 ----
 +
 ----
-NAME                                                       AGE
-placement-policy-selfmanagedhub-labels-decision-1          1m
+NAME                                                AGE
+placement-policy-selfmanagedhub-labels-decision-1   47m
 ----
++
+The object is the same one that existed in Exercise 1. What changed is its `status.decisions`.
 
 . Read which cluster the decision selected. The PlacementDecision names the cluster explicitly in its status:
 +
@@ -248,8 +277,8 @@ oc get policy policy-selfmanagedhub-labels -n {policy_namespace}
 ----
 +
 ----
-NAME                             REMEDIATION ACTION   COMPLIANCE STATE   AGE
-policy-selfmanagedhub-labels     enforce              Compliant          7m
+NAME                           REMEDIATION ACTION   COMPLIANCE STATE   AGE
+policy-selfmanagedhub-labels                        Compliant          7m
 ----
 
 === Verify
@@ -262,8 +291,8 @@ oc get policy policy-selfmanagedhub-labels -n {policy_namespace}
 ----
 
 ----
-NAME                             REMEDIATION ACTION   COMPLIANCE STATE   AGE
-policy-selfmanagedhub-labels     enforce              Compliant          7m
+NAME                           REMEDIATION ACTION   COMPLIANCE STATE   AGE
+policy-selfmanagedhub-labels                        Compliant          7m
 ----
 
 == Exercise 3: Prove that deletion propagates

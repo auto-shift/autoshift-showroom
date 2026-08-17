@@ -382,11 +382,52 @@ oc get operatorpolicy -A \
 +
 Both CSVs appear. The operator starts at `startingCSV` and OLM moves it up to the highest entry, then stops. Add a third CSV later and you have extended the path by 1 step, in git, reviewable.
 
+. Read the Subscription and the installed version together:
++
+[source,role="execute"]
+----
+oc get sub nfd -n openshift-nfd \
+  -o jsonpath='startingCSV={.spec.startingCSV}{"\n"}installedCSV={.status.installedCSV}{"\n"}'
+----
++
+----
+startingCSV=nfd.4.22.0-<older>
+installedCSV=nfd.4.22.0-<newer>
+----
+
+[IMPORTANT]
+====
+Those 2 lines disagree, and that is the lesson.
+
+You just named the *older* CSV as `startingCSV` on an operator already running the newer one, and nothing moved. The operator stayed where it was.
+
+`startingCSV` says where to begin when the operator is installed for the first time. It is not a target, and it is not a downgrade instruction. OLM does not walk an operator backwards: once a CSV is installed, the only way to a lower version is to remove the operator and install it again.
+
+This is worth internalising before Module 9, which rolls changes out across a fleet. Widening an allow-list moves operators forward. Narrowing it later stops future upgrades, but it does not undo the ones that already happened.
+====
+
 [NOTE]
 ====
 This is how a fleet does operator upgrades with AutoShift. You do not approve InstallPlans on individual clusters. You widen the allow-list in a values file, and every cluster in the clusterset moves within the bounds you described.
 
 Leaving `startingCSV` empty lets OLM choose where to begin while still constraining where the operator may end up, which is usually what you want for a clusterset of existing clusters.
+====
+
+. Remove the config block again. This was a preview, and Module 5 builds a `config:` block properly:
++
+[source,role="execute"]
+----
+sed -i '/^    config:/,$d' autoshift/values/clustersets/hub-minimal.yaml
+tail -3 autoshift/values/clustersets/hub-minimal.yaml
+----
++
+[IMPORTANT]
+====
+Do not skip this step, and do not leave the block in place intending to add to it later.
+
+A YAML mapping may not contain the same key twice. If you append a second `config:` at the same indentation, most parsers take the last one and discard the first, without an error. The Argo CD sync succeeds, the policy renders, and the allow-list you set here is simply gone.
+
+That is the failure mode to remember from this exercise: a values file can be wrong in a way that produces no error anywhere. When config you declared does not appear in the rendered ConfigMap, check for a duplicate key before checking anything else.
 ====
 
 == Exercise 3: Disable Node Feature Discovery

@@ -366,14 +366,15 @@ clusters:
         networkType: OVNKubernetes
 
         controlPlane:
-          instanceType: m5.xlarge
+          replicas: 1
+          instanceType: m5.2xlarge
           rootVolume:
             iops: 4000
             size: 100
             type: io1
 
         workers:
-          replicas: 3
+          replicas: 0
           instanceType: m5.xlarge
           rootVolume:
             iops: 2000
@@ -419,7 +420,7 @@ Note that `hub-minimal.yaml` ships with its own `openshift-version` value, which
 
 `aws.sshKeyRef` reads `ssh-publickey` from the same secret. The public key goes into the install-config so nodes accept SSH connections from the installer.
 
-`aws.controlPlane.replicas: 1` with `workers.replicas: 0` provisions single-node OpenShift (SNO). This is not just to save money.
+`aws.controlPlane.replicas: 1` with `workers.replicas: 0` provisions single-node OpenShift (SNO). Those 2 values are the reason the block above does not look like the example file you copied, which defaults to 3 control-plane nodes and 3 workers. This is not just to save money.
 
 A multi-availability-zone cluster creates 1 NAT gateway per zone, and each one consumes an Elastic IP. AWS sandbox accounts cap Elastic IPs, commonly at 5, and your hub cluster already holds several. Ask for a 3-zone spoke and the install fails partway through network creation:
 
@@ -464,7 +465,9 @@ helm upgrade --install autoshift ./autoshift \
 ====
 From here on, every `helm upgrade` must include all 4 values files.
 
-Helm renders from exactly the files you pass. Drop `managed-minimal.yaml` or `spoke-aws-1.yaml` from a later command and AutoShift renders as though you never declared them, which removes the clusterset and tells cluster-install to deprovision the cluster you just asked for.
+Helm renders from exactly the files you pass. Drop `managed-minimal.yaml` or `spoke-aws-1.yaml` from a later command and AutoShift renders as though you never declared them: the `managed` clusterset and the `spoke-aws-1` rendered-config disappear, so the cluster stops being configured and stops being labelled.
+
+That does not destroy anything. Removing a declaration removes AutoShift's management of the cluster, it does not deprovision it. An in-flight install keeps running to completion and an existing cluster keeps running unmanaged. You just lose the thread, and the fix is to pass all 4 files again. Module 10 covers what actually deprovisions a cluster.
 
 The remaining modules show the shorter 2-file command, because each was written to stand alone. Keep appending your 2 extra `-f` arguments to every one of them.
 ====

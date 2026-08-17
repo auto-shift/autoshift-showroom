@@ -44,13 +44,26 @@ ls -1
 ----
 +
 ----
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+LICENSE
+Makefile
+README.md
+SECURITY.md
 advanced-cluster-management
 autoshift
+components
 docs
+images
+mkdocs.yaml
 openshift-gitops
 policies
+renovate.json
 scripts
+tools
 ----
++
+The directories that matter for this lab are `autoshift/` (the chart you deploy), `policies/` (what the ApplicationSet discovers), and the two bootstrap charts `advanced-cluster-management/` and `openshift-gitops/`.
 
 . Read the minimal values file:
 +
@@ -171,13 +184,17 @@ Confirm the repo-server pod is running and did not crash on the init-container:
 
 [source,role="execute"]
 ----
-oc get pod -n openshift-gitops -l app.kubernetes.io/name=openshift-gitops-repo-server
+oc get pod -n openshift-gitops -l app.kubernetes.io/name=infra-gitops-repo-server
 ----
 
 ----
-NAME                                           READY   STATUS    RESTARTS   AGE
-openshift-gitops-repo-server-c999f75d5-l4rsg   1/1     Running   0          3m
+NAME                                        READY   STATUS    RESTARTS   AGE
+infra-gitops-repo-server-7fbbcbd54b-g2sq9   2/2     Running   0          3m
+infra-gitops-repo-server-7fbbcbd54b-l4b27   2/2     Running   0          3m
+infra-gitops-repo-server-7fbbcbd54b-phhtq   2/2     Running   0          3m
 ----
+
+The Argo CD instance AutoShift creates is named `infra-gitops`, not `openshift-gitops`, so the pod label selector carries that name. `2/2` counts the repo-server container and the PolicyGenerator CMP sidecar.
 
 A `RESTARTS` count above 0, or a `CrashLoopBackOff` status, indicates the init-container image resolution failed. See the Troubleshooting section.
 
@@ -189,8 +206,8 @@ oc get argocd -n openshift-gitops
 ----
 
 ----
-NAMESPACE          NAME          AGE
-openshift-gitops   infra-gitops  3m
+NAME           AGE
+infra-gitops   3m
 ----
 
 == Exercise 3: Deploy AutoShift and watch the ApplicationSet fan-out
@@ -276,13 +293,17 @@ Confirm the GitOps and ACM policies are present. These two policies now own the 
 
 [source,role="execute",subs="attributes"]
 ----
-oc get policies -n {policy_namespace} | grep -E 'gitops|acm'
+oc get policies -n {policy_namespace} | grep -E 'policy-(gitops|acm)-operator-install'
 ----
 
 ----
-policy-gitops-operator-install   ...
-policy-acm-operator-install      ...
+policy-acm-operator-install      enforce   37s
+policy-gitops-operator-install             3m11s
 ----
+
+The pattern is deliberately narrow. A bare `grep -E 'gitops|acm'` matches more than a dozen policies, because AutoShift ships a policy per component rather than one per operator.
+
+The blank `REMEDIATION ACTION` on `policy-gitops-operator-install` is normal: the field is set on the ConfigurationPolicy templates inside the policy, not always on the root Policy object, so the column is populated for some policies and empty for others.
 
 The hub cluster has no clusterset assignment yet. Placements will not select it, and policies will show as not applicable. That is expected at this stage. Module 2 covers clusterset assignment.
 

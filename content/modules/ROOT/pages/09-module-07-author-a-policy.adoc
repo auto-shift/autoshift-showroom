@@ -152,29 +152,62 @@ Install the toolchain if you have not done so in this session:
 make install-policy-generator
 ----
 
-Then render the directory. The kustomize command is identical to what the Argo CD repo-server runs. The `--enable-alpha-plugins` flag activates the PolicyGenerator plugin. `--enable-helm` allows the nested helmChart in `manifests/operator-install/kustomization.yaml` to render. `--load-restrictor LoadRestrictionsNone` lets the chart reference the `components/` directory above the policy directory:
+Rendering locally takes 1 more step than you might expect, and the reason is worth understanding.
 
+The policy files contain `${...}` placeholders that the CMP sidecar substitutes at sync time. They are not inert text. PolicyGenerator validates `evaluationInterval` as a Go duration, so it rejects the placeholder outright:
+
+----
+error processing the PolicyGenerator file: the policy policy-web-terminal-operator-install
+has an invalid policy.evaluationInterval.compliant value:
+time: invalid duration "${EVAL_COMPLIANT}"
+----
+
+So a local render has to do what the CMP does: stage a copy, substitute the placeholders, then build. The copy also needs `components/` alongside it, because the nested kustomization reaches up to the repository root to find the shared chart.
+
+. Stage and substitute:
++
 [source,role="execute"]
 ----
-KUSTOMIZE_PLUGIN_HOME=$PWD/.tools/kustomize-plugin .tools/kustomize build \
-  --enable-alpha-plugins --enable-helm --load-restrictor LoadRestrictionsNone \
-  policies/stable/web-terminal/
+WORK=$(mktemp -d)
+mkdir -p "$WORK/policies/stable"
+cp -r policies/stable/web-terminal "$WORK/policies/stable/"
+cp -r components "$WORK/"
+
+find "$WORK" -type f -name '*.yaml' -exec sed -i \
+  -e 's|${POLICY_NAMESPACE}|policies-autoshift|g' \
+  -e 's|${REMEDIATION}|enforce|g' \
+  -e 's|${EVAL_COMPLIANT}|watch|g' \
+  -e 's|${EVAL_NONCOMPLIANT}|watch|g' \
+  -e 's|${CLUSTER_SET_SUFFIX}||g' {} +
 ----
 
-The output is several hundred lines of YAML. The `${...}` placeholders remain as literal strings because this local command does not perform the CMP substitution step. Filter to see the 3 resource kinds that the 4 input files became:
-
+. Render. `--enable-alpha-plugins` activates the PolicyGenerator plugin, `--enable-helm` allows the nested `helmChart` to render, and `--load-restrictor LoadRestrictionsNone` lets the chart reference `components/`. The 2 `POLICY_GEN_*` variables configure the *nested* `kustomize build` that PolicyGenerator spawns for the shared chart, which the outer flags do not reach:
++
 [source,role="execute"]
 ----
+POLICY_GEN_ENABLE_HELM=true POLICY_GEN_DISABLE_LOAD_RESTRICTORS=true \
 KUSTOMIZE_PLUGIN_HOME=$PWD/.tools/kustomize-plugin .tools/kustomize build \
   --enable-alpha-plugins --enable-helm --load-restrictor LoadRestrictionsNone \
-  policies/stable/web-terminal/ | grep '^kind:'
+  "$WORK/policies/stable/web-terminal"
 ----
 
+. The output is about 100 lines of YAML. Filter to see the 3 resource kinds that the 4 input files became:
++
+[source,role="execute"]
+----
+POLICY_GEN_ENABLE_HELM=true POLICY_GEN_DISABLE_LOAD_RESTRICTORS=true \
+KUSTOMIZE_PLUGIN_HOME=$PWD/.tools/kustomize-plugin .tools/kustomize build \
+  --enable-alpha-plugins --enable-helm --load-restrictor LoadRestrictionsNone \
+  "$WORK/policies/stable/web-terminal" | grep '^kind:' | sort -u
+----
++
 ----
 kind: Placement
-kind: Policy
 kind: PlacementBinding
+kind: Policy
 ----
+
+This is the same staging the integration test performs in Exercise 3, which is why that test can validate every policy without a cluster.
 
 `helm template` does not work on this directory. The `docs/developer-guide.md` Quick Start section still shows `helm template policies/stable/...` as the validation command. That command fails on every PolicyGenerator directory in this repository. Use kustomize with the PolicyGenerator plugin as shown above.
 
@@ -184,9 +217,10 @@ Confirm the rendered output contains all 3 required resource types:
 
 [source,role="execute"]
 ----
+POLICY_GEN_ENABLE_HELM=true POLICY_GEN_DISABLE_LOAD_RESTRICTORS=true \
 KUSTOMIZE_PLUGIN_HOME=$PWD/.tools/kustomize-plugin .tools/kustomize build \
   --enable-alpha-plugins --enable-helm --load-restrictor LoadRestrictionsNone \
-  policies/stable/web-terminal/ | grep '^kind:' | sort -u
+  "$WORK/policies/stable/web-terminal" | grep '^kind:' | sort -u
 ----
 
 ----
@@ -218,21 +252,29 @@ The 5 stages are:
 cd tools && go test -tags integration ./internal/resolver/...
 ----
 +
-The test fails at the label contract stage. The `placement.yaml` you generated references `autoshift.io/web-terminal` in its Placement predicate. That key is not yet declared in `autoshift/values/clustersets/_example.yaml`, so stage 5 reports it as missing. The failure names the key, the policies that consume it, and exactly where to declare it:
+The test fails at the label contract stage. The `placement.yaml` you generated references `autoshift.io/web-terminal` in its Placement predicate, and the shared operator-install chart references the other 5. None are declared in `autoshift/values/clustersets/_example.yaml` yet, so stage 5 reports all 6 as missing. The failure names each key, the policies that consume it, and exactly where to declare it:
 +
 ----
---- FAIL: TestPipeline_EndToEnd (10.83s)
-    e2e_test.go:465: label contract violations — 1 key(s) consumed by policy
+--- FAIL: TestPipeline_EndToEnd (9.42s)
+    e2e_test.go:465: label contract violations — 6 key(s) consumed by policy
         templates but missing from all _example*.yaml files:
-          autoshift.io/web-terminal (consumed by: web-terminal)
+          autoshift.io/web-terminal (consumed by: stable/web-terminal)
+          autoshift.io/web-terminal-channel (consumed by: stable/web-terminal)
+          autoshift.io/web-terminal-source (consumed by: stable/web-terminal)
+          autoshift.io/web-terminal-source-namespace (consumed by: stable/web-terminal)
+          autoshift.io/web-terminal-subscription-name (consumed by: stable/web-terminal)
+          autoshift.io/web-terminal-version (consumed by: stable/web-terminal)
 
           fix: add each missing label under a `labels:` block in
                autoshift/values/clustersets/_example.yaml (for hub/cluster-set labels) or
                autoshift/values/clusters/_example.yaml (for per-cluster labels)
           once added, re-run: go test -tags integration -run TestPipeline_EndToEnd ./tools/internal/resolver/...
+    e2e_test.go:473: label contract: 395 OK, 6 missing, 0 orphaned
 FAIL
-FAIL	github.com/auto-shift/autoshiftv2/tools/internal/resolver	10.834s
+FAIL	github.com/auto-shift/autoshiftv2/tools/internal/resolver	11.729s
 ----
++
+All 6 keys of the operator contract are reported, not just the enable flag. The shared `components/operator-install` chart consumes every one of them, including the optional `-version` pin, so every one has to be declared.
 +
 [WARNING]
 ====
@@ -269,10 +311,13 @@ cat >> autoshift/values/clustersets/_example.yaml << 'EOF'
       web-terminal: 'false'
       web-terminal-subscription-name: web-terminal
       web-terminal-channel: fast
+      web-terminal-version: 'web-terminal.v1.13.0'
       web-terminal-source: redhat-operators
       web-terminal-source-namespace: openshift-marketplace
 EOF
 ----
++
+All 6 keys, including `web-terminal-version`. Leave any one out and the test fails again naming just that key. The `-version` value is a documentation example, the same as `gitops-version` and `acm-version` in the same file: the contract checks that the key is declared, not that the value is real.
 
 . Confirm the labels appear in the file:
 +
@@ -285,6 +330,7 @@ grep 'web-terminal' autoshift/values/clustersets/_example.yaml
       web-terminal: 'false'
       web-terminal-subscription-name: web-terminal
       web-terminal-channel: fast
+      web-terminal-version: 'web-terminal.v1.13.0'
       web-terminal-source: redhat-operators
       web-terminal-source-namespace: openshift-marketplace
 ----

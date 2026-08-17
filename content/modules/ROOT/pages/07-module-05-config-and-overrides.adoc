@@ -97,11 +97,23 @@ grep '^    config:' autoshift/values/clustersets/hub-minimal.yaml || echo "no co
 no config block found
 ----
 
+[NOTE]
+====
+If that prints `    config:` instead, you still have the preview block from Module 4. Remove it before continuing:
+
+[source,role="execute"]
+----
+sed -i '/^    config:/,$d' autoshift/values/clustersets/hub-minimal.yaml
+----
+
+Appending a second `config:` key at the same indentation does not raise an error. YAML parsers take the last occurrence and discard the earlier one, so the block you add below would silently replace the one already there.
+====
+
 == Exercise 2: Add a config block and read it back
 
 A single `cat >>` appends 2 things to `hub-minimal.yaml`: the `uwm: 'true'` label at 6-space indentation (inside the existing `labels:` block), and the `config:` block at 4-space indentation (which closes the labels block and opens a peer key under `hub:`).
 
-The config block uses the minimum fields the UWM policy needs to produce a complete `user-workload-monitoring-config` ConfigMap: a storage class, Prometheus retention and storage, and Thanos Ruler retention and storage. Fields left without values would produce an invalid resource quantity in the rendered ConfigMap.
+The config block uses the minimum fields the UWM policy needs to produce a complete `user-workload-monitoring-config` ConfigMap: Prometheus retention and storage, and Thanos Ruler retention and storage. There is no `storageClass`, for the reason given in Exercise 1. Fields left without values would produce an invalid resource quantity in the rendered ConfigMap.
 
 . Append the label and config block to `hub-minimal.yaml`:
 +
@@ -204,7 +216,7 @@ placement-policy-uwm-enable-decision-1   1m
 
 === Verify
 
-Confirm the `storageClass` value from the config block is present in the rendered-config, proving the config block arrived on the hub:
+Confirm the values from the config block are present in the rendered-config, proving the config block arrived on the hub:
 
 [source,role="execute"]
 ----
@@ -215,7 +227,7 @@ oc get configmap local-cluster.rendered-config -n policies-autoshift \
 ----
   prometheus:
     retention: 24h
-    storage: 20Gi
+    storage: 10Gi
 ----
 
 The values arrived exactly as written in `hub-minimal.yaml`.
@@ -253,8 +265,11 @@ helm upgrade --install autoshift ./autoshift \
   -f autoshift/values/global.yaml \
   -f autoshift/values/clustersets/hub-minimal.yaml \
   -f autoshift/values/clustersets/managed-minimal.yaml \
-  -f autoshift/values/clusters/spoke-aws-1.yaml
+  -f autoshift/values/clusters/spoke-aws-1.yaml \
+  -f autoshift/values/clusters/local-cluster.yaml
 ----
++
+That is 5 files for this exercise. The override lives in the 5th, so leaving it off applies nothing and the exercise appears to do nothing.
 
 . The `autoshift-cluster-config-maps` Application now creates a `managed-cluster-config.local-cluster` ConfigMap containing only the fields you overrode. Wait for the Application to sync:
 +
@@ -297,7 +312,7 @@ The 1st value (`7d`) is `prometheus.retention` from the cluster override. The 2n
 
 === Verify
 
-Confirm the cluster value won for `prometheus.retention` and the clusterset value held for `storageClass`:
+Confirm the cluster value won for `prometheus.retention` and the clusterset values held for everything else:
 
 [source,role="execute"]
 ----
@@ -306,14 +321,30 @@ oc get configmap local-cluster.rendered-config -n policies-autoshift \
 ----
 
 ----
-  prometheus:
-    retention: 24h
-    storage: 20Gi
     retention: 7d
+    storage: 10Gi
     retention: 24h
+    storage: 5Gi
 ----
 
-`storage: 20Gi` is unchanged and sourced from the clusterset. The first `retention: 7d` is the cluster override winning over the clusterset's `retention: 24h` for Prometheus. Thanos Ruler retention stayed at `24h` because the cluster config set only `prometheus.retention`.
+`retention: 7d` is the cluster override winning over the clusterset's `24h` for Prometheus. Everything else came from the clusterset untouched: Prometheus storage at `10Gi`, and Thanos Ruler at `24h` and `5Gi`, because the cluster config set only `prometheus.retention`.
+
+=== Clean up the override
+
+Remove the per-cluster file before continuing. It was a demonstration, and later modules use the 4-file command from Module 3:
+
+[source,role="execute"]
+----
+rm autoshift/values/clusters/local-cluster.yaml
+helm upgrade --install autoshift ./autoshift \
+  -n openshift-gitops \
+  -f autoshift/values/global.yaml \
+  -f autoshift/values/clustersets/hub-minimal.yaml \
+  -f autoshift/values/clustersets/managed-minimal.yaml \
+  -f autoshift/values/clusters/spoke-aws-1.yaml
+----
+
+Prometheus retention returns to the clusterset value of `24h`. Dropping a values file removes what it declared, which is the same mechanism Module 3 warned about, used deliberately here.
 
 == Troubleshooting
 

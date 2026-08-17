@@ -57,12 +57,14 @@ oc get managedclusterset
 ----
 
 ----
-NAME            AGE
-hub             ...
-local-cluster   ...
+NAME      EMPTY   AGE
+default   True    4h
+global    False   4h
+hub       False   4h
+managed   False   3h
 ----
 
-The `hub` clusterset was created by the `policy-foundation` chart in Module 1. In a real gradual rollout you would see `hub-0-0-1` and `hub-0-0-2` alongside each other, each owned by a separate AutoShift Application with its own policy namespace.
+`default` and `global` come from ACM. `hub` was created by the `policy-foundation` chart in Module 1, and `managed` by the `managed-minimal.yaml` you wrote in Module 3. `default` is now `EMPTY` because Module 2 moved `local-cluster` out of it. In a real gradual rollout you would see `hub-0-0-1` and `hub-0-0-2` alongside each other, each owned by a separate AutoShift Application with its own policy namespace.
 
 === Verify
 
@@ -182,14 +184,39 @@ oc get policy -n policies-autoshift policy-openshift-upgrade-status \
 
 === Try it on the lab cluster
 
-The upgrade label is not set in the lab's `hub-minimal.yaml`. Confirm that no upgrade policies are deployed in the policy namespace:
+The upgrade label is not set in the lab's `hub-minimal.yaml`. Look at what that means in the policy namespace:
 
 [source,role="execute"]
 ----
 oc get policy -n policies-autoshift | grep openshift-upgrade
 ----
 
-The output is empty. The policy only deploys when a cluster in the target clusterset carries `autoshift.io/openshift-upgrade: 'true'`. The label is the gate. Removing it (or never setting it) is sufficient to keep a cluster out of the upgrade pipeline entirely.
+----
+policy-openshift-upgrade           enforce                          3h58m
+policy-openshift-upgrade-allowed   inform                           3h58m
+policy-openshift-upgrade-channel   enforce                          3h58m
+policy-openshift-upgrade-status    inform                           3h58m
+----
+
+The policies are there. The `COMPLIANCE STATE` column is blank for all 4, which is the part that matters.
+
+[IMPORTANT]
+====
+Being deployed and being applied are different things, and the distinction has come up in every module of this lab.
+
+The ApplicationSet deploys *every* directory under `policies/` to the policy namespace, unconditionally. It does not know or care which clusters you have. So the presence of a policy in `policies-autoshift` tells you nothing about whether any cluster is subject to it.
+
+What gates application is the Placement. No cluster carries `autoshift.io/openshift-upgrade: 'true'`, so the Placement selects nothing, no PlacementDecision names a cluster, and no replicated policy is created in any cluster's namespace.
+
+Check the cluster namespace when you want to know what is actually being enforced:
+
+[source,role="execute"]
+----
+oc get policy -n local-cluster | grep openshift-upgrade || echo "not applied to local-cluster"
+----
+
+The label is the gate. Never setting it keeps a cluster out of the upgrade pipeline entirely, even though the policy objects exist on the hub the whole time.
+====
 
 === Verify
 
