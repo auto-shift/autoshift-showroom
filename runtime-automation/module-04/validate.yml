@@ -2,8 +2,42 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    policy_ns: policies-autoshift
   tasks:
-    - name: Validate module completion
-      validation_check:
-        check: true
-        msg: "Module 4 validation — replace with your checks"
+    - name: Read the node-feature-discovery label on local-cluster
+      ansible.builtin.shell: >-
+        oc get managedcluster local-cluster --show-labels --no-headers
+        | tr ',' '\n' | sed -n 's|^autoshift.io/node-feature-discovery=||p'
+      register: nfd
+      changed_when: false
+      failed_when: false
+
+    - name: Read the NFD operator CSV phase
+      ansible.builtin.shell: >-
+        oc get csv -n openshift-nfd --no-headers 2>/dev/null
+        | awk '/^nfd\./ {print $NF}' | head -1
+      register: csv
+      changed_when: false
+      failed_when: false
+
+    - name: Read the clusters the NFD placement selected
+      ansible.builtin.shell: >-
+        oc get placementdecision -n {{ policy_ns }}
+        -l cluster.open-cluster-management.io/placement=placement-policy-node-feature-discovery
+        -o jsonpath='{range .items[*]}{range .status.decisions[*]}{.clusterName}{"\n"}{end}{end}'
+      register: placed
+      changed_when: false
+      failed_when: false
+
+    - validation_check:
+        check: "{{ nfd.stdout | default('') | length > 0 }}"
+        msg: "The node-feature-discovery label is declared (value: {{ nfd.stdout | default('absent') }})"
+
+    - validation_check:
+        check: "{{ csv.stdout == 'Succeeded' }}"
+        msg: "The NFD operator installed (CSV phase: {{ csv.stdout | default('absent') }})"
+
+    - validation_check:
+        check: "{{ nfd.stdout != 'true' or 'local-cluster' in (placed.stdout | default('')) }}"
+        msg: "Placement matches the label state (label={{ nfd.stdout | default('absent') }}, placed on: {{ placed.stdout_lines | default([]) | join(', ') or 'none' }})"

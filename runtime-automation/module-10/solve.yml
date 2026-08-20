@@ -1,4 +1,4 @@
-- name: Module 8 Solve
+- name: Module 10 Solve
   hosts: localhost
   connection: local
   gather_facts: false

@@ -3,5 +3,8 @@
   connection: local
   gather_facts: false
   tasks:
-    - ansible.builtin.debug:
-        msg: "Module 1 solve — replace with your automation tasks"
+    - name: Solve is not available for this module
+      ansible.builtin.debug:
+        msg: >-
+          This module has no automated solve. Follow the steps on the page, then use
+          Validate Module to check your work.

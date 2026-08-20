@@ -1,0 +1,38 @@
+- name: Module 9 Validate
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    policy_ns: policies-autoshift
+  tasks:
+    - name: List the clustersets on the hub
+      ansible.builtin.shell: "oc get managedclusterset --no-headers | awk '{print $1}'"
+      register: sets
+      changed_when: false
+      failed_when: false
+
+    - name: Count the upgrade policies AutoShift ships
+      ansible.builtin.shell: "oc get policy -n {{ policy_ns }} --no-headers | grep -c openshift-upgrade"
+      register: upg
+      changed_when: false
+      failed_when: false
+
+    - name: Read the clusterset local-cluster belongs to
+      ansible.builtin.shell: >-
+        oc get managedcluster local-cluster --show-labels --no-headers
+        | tr ',' '\n' | sed -n 's|^cluster.open-cluster-management.io/clusterset=||p'
+      register: cs
+      changed_when: false
+      failed_when: false
+
+    - validation_check:
+        check: "{{ 'hub' in (sets.stdout_lines | default([])) }}"
+        msg: "The hub clusterset exists ({{ sets.stdout_lines | default([]) | join(', ') }})"
+
+    - validation_check:
+        check: "{{ (upg.stdout | default('0') | int) >= 1 }}"
+        msg: "The openshift-upgrade policies are present on the hub ({{ upg.stdout | default(0) }} found)"
+
+    - validation_check:
+        check: "{{ cs.stdout | default('') | length > 0 }}"
+        msg: "local-cluster belongs to a clusterset, so gradual rollout can move it ({{ cs.stdout | default('none') }})"

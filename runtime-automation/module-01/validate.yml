@@ -2,8 +2,61 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    policy_ns: policies-autoshift
   tasks:
-    - name: Validate module completion
-      validation_check:
-        check: true
-        msg: "Module 1 validation — replace with your checks"
+    - name: Read MultiClusterHub phase
+      ansible.builtin.command: >-
+        oc get multiclusterhub multiclusterhub -n open-cluster-management
+        -o jsonpath={.status.phase}
+      register: mch
+      changed_when: false
+      failed_when: false
+
+    - name: Read GitOps repo server availability
+      ansible.builtin.command: >-
+        oc get deploy infra-gitops-repo-server -n openshift-gitops
+        -o jsonpath={.status.availableReplicas}
+      register: repo
+      changed_when: false
+      failed_when: false
+
+    - name: Read the AutoShift ApplicationSet
+      ansible.builtin.command: oc get applicationset autoshift-policies -n openshift-gitops -o name
+      register: appset
+      changed_when: false
+      failed_when: false
+
+    - name: Count Applications the ApplicationSet produced
+      ansible.builtin.command: >-
+        oc get applications.argoproj.io -n openshift-gitops
+        -l app=autoshift-policies -o name
+      register: apps
+      changed_when: false
+      failed_when: false
+
+    - name: Count policies in the policy namespace
+      ansible.builtin.command: oc get policy -n {{ policy_ns }} -o name
+      register: policies
+      changed_when: false
+      failed_when: false
+
+    - validation_check:
+        check: "{{ mch.stdout == 'Running' }}"
+        msg: "MultiClusterHub is Running (found: {{ mch.stdout | default('absent') }})"
+
+    - validation_check:
+        check: "{{ (repo.stdout | default('0') | int) > 0 }}"
+        msg: "OpenShift GitOps repo server is available"
+
+    - validation_check:
+        check: "{{ appset.rc == 0 }}"
+        msg: "ApplicationSet autoshift-policies exists"
+
+    - validation_check:
+        check: "{{ (apps.stdout_lines | default([]) | length) > 0 }}"
+        msg: "ApplicationSet produced Applications ({{ apps.stdout_lines | default([]) | length }} found)"
+
+    - validation_check:
+        check: "{{ (policies.stdout_lines | default([]) | length) > 0 }}"
+        msg: "Policies exist in {{ policy_ns }} ({{ policies.stdout_lines | default([]) | length }} found)"

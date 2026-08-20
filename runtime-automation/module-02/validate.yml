@@ -2,8 +2,50 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    policy_ns: policies-autoshift
   tasks:
-    - name: Validate module completion
-      validation_check:
-        check: true
-        msg: "Module 2 validation — replace with your checks"
+    - name: Read the clusterset assignment on local-cluster
+      ansible.builtin.shell: >-
+        oc get managedcluster local-cluster --show-labels --no-headers
+        | tr ',' '\n' | sed -n 's/^cluster.open-cluster-management.io\/clusterset=//p'
+      register: cs
+      changed_when: false
+      failed_when: false
+
+    - name: Read the autoshift.io labels stamped on local-cluster
+      ansible.builtin.shell: >-
+        oc get managedcluster local-cluster -o json | grep -c '"autoshift.io/'
+      register: stamped
+      changed_when: false
+      failed_when: false
+
+    - name: Read the clusterset ConfigMap the labels come from
+      ansible.builtin.command: oc get configmap cluster-set.hub -n {{ policy_ns }} -o name
+      register: cm
+      changed_when: false
+      failed_when: false
+
+    - name: Read the cluster-labels policy compliance
+      ansible.builtin.command: >-
+        oc get policy policy-selfmanagedhub-labels -n {{ policy_ns }}
+        -o jsonpath={.status.compliant}
+      register: pol
+      changed_when: false
+      failed_when: false
+
+    - validation_check:
+        check: "{{ cs.stdout == 'hub' }}"
+        msg: "local-cluster is assigned to the hub clusterset (found: {{ cs.stdout | default('unassigned') }})"
+
+    - validation_check:
+        check: "{{ (stamped.stdout | default('0') | int) > 0 }}"
+        msg: "autoshift.io labels are stamped on local-cluster ({{ stamped.stdout | default(0) }} found)"
+
+    - validation_check:
+        check: "{{ cm.rc == 0 }}"
+        msg: "ConfigMap cluster-set.hub exists in {{ policy_ns }}"
+
+    - validation_check:
+        check: "{{ pol.stdout == 'Compliant' }}"
+        msg: "policy-selfmanagedhub-labels is Compliant (found: {{ pol.stdout | default('none') }})"

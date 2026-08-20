@@ -3,7 +3,59 @@
   connection: local
   gather_facts: false
   tasks:
-    - name: Validate module completion
-      validation_check:
-        check: true
-        msg: "Module 3 validation — replace with your checks"
+    - name: Count keys in the cluster-install source secret
+      ansible.builtin.shell: >-
+        oc get secret aws-creds -n cluster-install-secrets -o jsonpath='{.data}'
+        | grep -o '"[a-zA-Z_-]*":' | wc -l
+      register: keys
+      changed_when: false
+      failed_when: false
+
+    - name: Read the registry labels stamped on local-cluster
+      ansible.builtin.shell: >-
+        oc get managedcluster local-cluster --show-labels --no-headers
+        | tr ',' '\n' | grep -cE '^autoshift.io/(odf|quay)='
+      register: reglabels
+      changed_when: false
+      failed_when: false
+
+    - name: Read the StorageCluster phase
+      ansible.builtin.command: >-
+        oc get storagecluster ocs-storagecluster -n openshift-storage -o jsonpath={.status.phase}
+      register: sc
+      changed_when: false
+      failed_when: false
+
+    - name: Read the QuayRegistry availability
+      ansible.builtin.shell: >-
+        oc get quayregistry registry -n quay-enterprise
+        -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+      register: quay
+      changed_when: false
+      failed_when: false
+
+    - name: Look for the spoke ClusterDeployment
+      ansible.builtin.command: oc get clusterdeployment spoke-aws-1 -n spoke-aws-1 -o name
+      register: cd
+      changed_when: false
+      failed_when: false
+
+    - validation_check:
+        check: "{{ (keys.stdout | default('0') | int) >= 5 }}"
+        msg: "Secret aws-creds holds all 5 keys ({{ keys.stdout | default(0) }} found)"
+
+    - validation_check:
+        check: "{{ (reglabels.stdout | default('0') | int) >= 2 }}"
+        msg: "The odf and quay labels reached local-cluster"
+
+    - validation_check:
+        check: "{{ sc.stdout == 'Ready' }}"
+        msg: "StorageCluster is Ready (found: {{ sc.stdout | default('absent') }})"
+
+    - validation_check:
+        check: "{{ quay.stdout == 'True' }}"
+        msg: "QuayRegistry is Available (found: {{ quay.stdout | default('absent') }})"
+
+    - validation_check:
+        check: "{{ cd.rc == 0 }}"
+        msg: "ClusterDeployment spoke-aws-1 was created"

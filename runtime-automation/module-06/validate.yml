@@ -2,8 +2,35 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    policy_ns: policies-autoshift
   tasks:
-    - name: Validate module completion
-      validation_check:
-        check: true
-        msg: "Module 6 validation — replace with your checks"
+    - name: Count enforce policies
+      ansible.builtin.shell: >-
+        oc get policy -n {{ policy_ns }} --no-headers
+        -o custom-columns=R:.spec.remediationAction | grep -c '^enforce'
+      register: enforce
+      changed_when: false
+      failed_when: false
+
+    - name: Read dryRun in the values file
+      ansible.builtin.shell: "grep -c 'dryRun: false' autoshift/values/global.yaml"
+      args:
+        chdir: "{{ lookup('env','AUTOSHIFT_REPO') | default(lookup('env','HOME') ~ '/autoshiftv2', true) }}"
+      register: dryrun
+      changed_when: false
+      failed_when: false
+
+    - name: Confirm policies replicate to the managed cluster namespace
+      ansible.builtin.shell: oc get policy -n local-cluster --no-headers | wc -l
+      register: replicated
+      changed_when: false
+      failed_when: false
+
+    - validation_check:
+        check: "{{ (enforce.stdout | default('0') | int) > 0 }}"
+        msg: "Dry run is off, so policies enforce again ({{ enforce.stdout | default(0) }} enforcing)"
+
+    - validation_check:
+        check: "{{ (replicated.stdout | default('0') | int) > 0 }}"
+        msg: "Policies replicate into the local-cluster namespace ({{ replicated.stdout | default(0) }} found)"

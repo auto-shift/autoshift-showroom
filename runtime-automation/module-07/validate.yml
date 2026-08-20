@@ -2,8 +2,40 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    repo: "{{ lookup('env','AUTOSHIFT_REPO') | default(lookup('env','HOME') ~ '/autoshiftv2', true) }}"
   tasks:
-    - name: Validate module completion
-      validation_check:
-        check: true
-        msg: "Module 7 validation — replace with your checks"
+    - name: Look for the scaffolded policy directory
+      ansible.builtin.stat:
+        path: "{{ repo }}/policies/stable/web-terminal"
+      register: dir
+
+    - name: Look for the four files the generator produces
+      ansible.builtin.stat:
+        path: "{{ repo }}/policies/stable/web-terminal/{{ item }}"
+      loop:
+        - kustomization.yaml
+        - policy-generator-config.yaml
+        - placement.yaml
+        - manifests/operator-install/kustomization.yaml
+      register: files
+
+    - name: Check the labels were declared in the example values
+      ansible.builtin.shell: "grep -c 'web-terminal' autoshift/values/clustersets/_example.yaml"
+      args:
+        chdir: "{{ repo }}"
+      register: declared
+      changed_when: false
+      failed_when: false
+
+    - validation_check:
+        check: "{{ dir.stat.exists | default(false) }}"
+        msg: "The web-terminal policy directory was scaffolded"
+
+    - validation_check:
+        check: "{{ files.results | map(attribute='stat.exists') | select | list | length == 4 }}"
+        msg: "All 4 generated files are present ({{ files.results | map(attribute='stat.exists') | select | list | length }} of 4)"
+
+    - validation_check:
+        check: "{{ (declared.stdout | default('0') | int) >= 6 }}"
+        msg: "The web-terminal labels were declared in _example.yaml, satisfying the label contract"

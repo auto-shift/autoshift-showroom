@@ -2,8 +2,45 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    policy_ns: policies-autoshift
   tasks:
-    - name: Validate module completion
-      validation_check:
-        check: true
-        msg: "Module 5 validation — replace with your checks"
+    - name: Read the resolved config for local-cluster
+      ansible.builtin.command: >-
+        oc get configmap local-cluster.rendered-config -n {{ policy_ns }} -o jsonpath={.data.config}
+      register: rc
+      changed_when: false
+      failed_when: false
+
+    - name: Parse it
+      ansible.builtin.set_fact:
+        cfg: "{{ rc.stdout | default('{}') | from_yaml }}"
+      failed_when: false
+
+    - name: Read the uwm label
+      ansible.builtin.shell: >-
+        oc get managedcluster local-cluster --show-labels --no-headers
+        | tr ',' '\n' | sed -n 's|^autoshift.io/uwm=||p'
+      register: uwm
+      changed_when: false
+      failed_when: false
+
+    - validation_check:
+        check: "{{ rc.rc == 0 }}"
+        msg: "The rendered-config ConfigMap exists for local-cluster"
+
+    - validation_check:
+        check: "{{ cfg.uwm is defined }}"
+        msg: "The uwm config block reached rendered-config"
+
+    - validation_check:
+        check: "{{ (cfg.uwm.prometheus.retention | default('')) == '7d' }}"
+        msg: "The per-cluster override won (uwm.prometheus.retention is {{ cfg.uwm.prometheus.retention | default('unset') }}, expected 7d)"
+
+    - validation_check:
+        check: "{{ (cfg.uwm.prometheus.storage | default('')) == '10Gi' }}"
+        msg: "The clusterset value survived the merge (uwm.prometheus.storage is {{ cfg.uwm.prometheus.storage | default('unset') }}, expected 10Gi)"
+
+    - validation_check:
+        check: "{{ uwm.stdout == 'true' }}"
+        msg: "The uwm label is stamped on local-cluster"

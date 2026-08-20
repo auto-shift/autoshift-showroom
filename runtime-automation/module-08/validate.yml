@@ -3,7 +3,38 @@
   connection: local
   gather_facts: false
   tasks:
-    - name: Validate module completion
-      validation_check:
-        check: true
-        msg: "Module 8 validation — replace with your checks"
+    - name: Read the ApplicationSet generator type
+      ansible.builtin.shell: >-
+        oc get applicationset autoshift-policies -n openshift-gitops
+        -o jsonpath='{.spec.generators[0]}' | head -c 40
+      register: gen
+      changed_when: false
+      failed_when: false
+
+    - name: Count Applications sourcing from an OCI registry
+      ansible.builtin.shell: >-
+        oc get applications.argoproj.io -n openshift-gitops -o yaml
+        | grep -c 'repoURL: oci://'
+      register: oci
+      changed_when: false
+      failed_when: false
+
+    - name: Count Applications that reconciled against the registry
+      ansible.builtin.shell: >-
+        oc get applications.argoproj.io -n openshift-gitops --no-headers
+        | awk '$2=="Synced"' | wc -l | tr -d ' '
+      register: synced
+      changed_when: false
+      failed_when: false
+
+    - validation_check:
+        check: "{{ '\"list\"' in (gen.stdout | default('')) or 'elements' in (gen.stdout | default('')) }}"
+        msg: "The ApplicationSet switched to the OCI list generator"
+
+    - validation_check:
+        check: "{{ (oci.stdout | default('0') | int) > 0 }}"
+        msg: "Applications source from the OCI registry ({{ oci.stdout | default(0) }} found)"
+
+    - validation_check:
+        check: "{{ (synced.stdout | default('0') | int) > 0 }}"
+        msg: "Applications reconciled against the registry ({{ synced.stdout | default(0) }} Synced)"

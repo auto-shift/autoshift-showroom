@@ -1,0 +1,34 @@
+- name: Module 10 Validate
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Look for a remaining spoke ClusterDeployment
+      ansible.builtin.shell: "oc get clusterdeployment -A --no-headers 2>/dev/null | wc -l | tr -d ' '"
+      register: cd
+      changed_when: false
+      failed_when: false
+
+    - name: Look for a remaining spoke ManagedCluster
+      ansible.builtin.shell: "oc get managedcluster --no-headers | awk '$1!=\"local-cluster\"' | wc -l | tr -d ' '"
+      register: mc
+      changed_when: false
+      failed_when: false
+
+    - name: Confirm the hub itself is still managed
+      ansible.builtin.command: oc get managedcluster local-cluster -o name
+      register: hub
+      changed_when: false
+      failed_when: false
+
+    - validation_check:
+        check: "{{ (cd.stdout | default('0') | int) == 0 }}"
+        msg: "No ClusterDeployment remains, so the spoke was torn down and billing stopped"
+
+    - validation_check:
+        check: "{{ (mc.stdout | default('0') | int) == 0 }}"
+        msg: "No spoke ManagedCluster remains on the hub"
+
+    - validation_check:
+        check: "{{ hub.rc == 0 }}"
+        msg: "The hub itself is still registered as local-cluster"
