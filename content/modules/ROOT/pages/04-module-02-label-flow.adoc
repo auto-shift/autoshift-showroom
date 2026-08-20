@@ -19,6 +19,8 @@ The chain breaks at the very first link, because `local-cluster` is not in a clu
 
 == Learning objectives
 
+image::autoshift-config-and-labels.svg[The label path you are about to trace, and the config path beside it]
+
 By the end of this module, you'll be able to:
 
 * Trace a label from a values file through to a policy applied on a cluster
@@ -181,7 +183,7 @@ data:
     "autoshift.io/gitops-disable-default-argocd":"true",
     "autoshift.io/gitops-source":"redhat-operators","autoshift.io/gitops-source-namespace":
     "openshift-marketplace","autoshift.io/gitops-subscription-name":"openshift-gitops-operator",
-    "autoshift.io/openshift-version":"4.20.29","autoshift.io/self-managed":"true"}'
+    "autoshift.io/openshift-version":"4.22.8","autoshift.io/self-managed":"true"}'
   values: '...'
 kind: ConfigMap
 metadata:
@@ -210,7 +212,7 @@ oc get managedcluster local-cluster -o json | grep '"autoshift\.io/'
             "autoshift.io/gitops-source": "redhat-operators",
             "autoshift.io/gitops-source-namespace": "openshift-marketplace",
             "autoshift.io/gitops-subscription-name": "openshift-gitops-operator",
-            "autoshift.io/openshift-version": "4.20.29",
+            "autoshift.io/openshift-version": "4.22.8",
             "autoshift.io/owning-deployment": "autoshift",
             "autoshift.io/owning-namespace": "policies-autoshift",
             "autoshift.io/self-managed": "true",
@@ -218,7 +220,7 @@ oc get managedcluster local-cluster -o json | grep '"autoshift\.io/'
 +
 [NOTE]
 ====
-`autoshift.io/openshift-version` is `4.20.29` because that is the value committed in `hub-minimal.yaml`, not the version this cluster is running. The label records the version AutoShift treats as desired for mirroring and for cluster installs. Nothing in this deployment enforces it against the hub's own ClusterVersion, so the mismatch is inert here. Module 3 sets it deliberately for the spoke cluster you provision.
+`autoshift.io/openshift-version` is `4.22.8` because that is the value committed in `hub-minimal.yaml`, not the version this cluster is running. The label records the version AutoShift treats as *desired*. It drives image mirroring, it is the target for cluster installs, and when the `openshift-upgrade` feature is enabled it is the version AutoShift upgrades a cluster to. The `policy-openshift-upgrade` policies exist on the hub already, but they are not applied here because `autoshift.io/openshift-upgrade` is unset, so the mismatch has no effect on this cluster. Module 3 sets the label deliberately for the spoke cluster you provision, and Module 9 covers upgrades.
 
 `autoshift.io/cluster-type` is injected by the chart at render time rather than authored in the values file, which is why it appears here without being in the labels block you read earlier.
 ====

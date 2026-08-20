@@ -97,17 +97,7 @@ grep '^    config:' autoshift/values/clustersets/hub-minimal.yaml || echo "no co
 no config block found
 ----
 
-[NOTE]
-====
-If that prints `    config:` instead, you still have the preview block from Module 4. Remove it before continuing:
 
-[source,role="execute"]
-----
-sed -i '/^    config:/,$d' autoshift/values/clustersets/hub-minimal.yaml
-----
-
-Appending a second `config:` key at the same indentation does not raise an error. YAML parsers take the last occurrence and discard the earlier one, so the block you add below would silently replace the one already there.
-====
 
 == Exercise 2: Add a config block and read it back
 
@@ -115,15 +105,19 @@ A single `cat >>` appends 2 things to `hub-minimal.yaml`: the `uwm: 'true'` labe
 
 The config block uses the minimum fields the UWM policy needs to produce a complete `user-workload-monitoring-config` ConfigMap: Prometheus retention and storage, and Thanos Ruler retention and storage. There is no `storageClass`, for the reason given in Exercise 1. Fields left without values would produce an invalid resource quantity in the rendered ConfigMap.
 
-. Append the label and config block to `hub-minimal.yaml`:
-+
+Add the `uwm` label and its config block:
+
 [source,role="execute"]
 ----
-cat >> autoshift/values/clustersets/hub-minimal.yaml << 'EOF'
-
-      ### User Workload Monitoring
-      uwm: 'true'
+cat > autoshift/values/clustersets/hub-minimal.yaml << 'EOF'
+# Minimum Hub Cluster Configuration
+hubClusterSets:
+  hub:
     config:
+      quay:
+        bootstrap:
+          userInitialize: true
+          xhrOnly: false
       uwm:
         prometheus:
           retention: '24h'
@@ -131,28 +125,68 @@ cat >> autoshift/values/clustersets/hub-minimal.yaml << 'EOF'
         thanosRuler:
           retention: '24h'
           storage: '5Gi'
+    labels:
+      openshift-version: '4.22.8'
+      self-managed: 'true'
+
+      ### OpenShift GitOps (REQUIRED)
+      gitops: 'true'
+      gitops-subscription-name: openshift-gitops-operator
+      gitops-disable-default-argocd: 'true'
+      gitops-channel: gitops-1.21
+      gitops-source: redhat-operators
+      gitops-source-namespace: openshift-marketplace
+
+      ### Advanced Cluster Management (AUTOMATIC)
+      acm-subscription-name: advanced-cluster-management
+      acm-channel: release-2.17
+      acm-source: redhat-operators
+      acm-source-namespace: openshift-marketplace
+
+      ### OpenShift Data Foundation, NooBaa only
+      odf: 'true'
+      odf-subscription-name: odf-operator
+      odf-channel: stable-4.22
+      odf-source: redhat-operators
+      odf-source-namespace: openshift-marketplace
+      odf-multi-cloud-gateway: standalone
+
+      ### Quay
+      quay: 'true'
+      quay-subscription-name: quay-operator
+      quay-channel: stable-3.18
+      quay-source: redhat-operators
+      quay-source-namespace: openshift-marketplace
+
+      gitops-cluster-ca-bundle: 'true'
+
+      ### Node Feature Discovery, disabled at the end of Module 4
+      node-feature-discovery: 'false'
+      node-feature-discovery-subscription-name: nfd
+      node-feature-discovery-channel: stable
+      node-feature-discovery-source: redhat-operators
+      node-feature-discovery-source-namespace: openshift-marketplace
+
+      ### User Workload Monitoring
+      uwm: 'true'
 EOF
 ----
 
-. Confirm the append looks correct. The `config:` key must sit at 4-space indentation, the same level as `labels:`:
+. Confirm both edits landed:
 +
 [source,role="execute"]
 ----
-tail -12 autoshift/values/clustersets/hub-minimal.yaml
+grep -A3 'uwm:' autoshift/values/clustersets/hub-minimal.yaml | head -8
+tail -2 autoshift/values/clustersets/hub-minimal.yaml
 ----
 +
 ----
-
-      ### User Workload Monitoring
-      uwm: 'true'
-    config:
       uwm:
         prometheus:
           retention: '24h'
           storage: '10Gi'
-        thanosRuler:
-          retention: '24h'
-          storage: '5Gi'
+      ### User Workload Monitoring
+      uwm: 'true'
 ----
 
 . Apply the updated values file:

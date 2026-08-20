@@ -21,6 +21,8 @@ blocks.
 
 == Three-phase deployment
 
+image::autoshift-schematic.svg[How AutoShift deploys configuration to a fleet]
+
 AutoShift deploys in 3 phases:
 
 . *Bootstrap.* Install Red Hat Advanced Cluster Management on the hub cluster with `helm install`,
@@ -79,6 +81,8 @@ Two labels are stamped automatically and are not configurable in the values file
 deployment manages a given cluster and drive ownership checks in the cluster-install policies.
 
 == Labels versus config: blocks
+
+image::autoshift-config-and-labels.svg[Labels and config each travel their own path from values files to a policy]
 
 Every operator policy reads the same 5 labels:
 

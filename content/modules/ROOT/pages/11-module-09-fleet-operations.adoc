@@ -30,6 +30,8 @@ Every policy in AutoShift targets a `ManagedClusterSet` through a Placement pred
 
 == Gradual rollout
 
+image::autoshift-gradual-rollout.svg[Versioned clustersets move clusters between AutoShift deployments one wave at a time]
+
 Two AutoShift releases run side by side. Each owns a separate clusterset, named with a version suffix. You migrate clusters from 1 clusterset to the other in controlled waves.
 
 Setting `versionedClusterSets: true` in the AutoShift Application tells it to append the version string to every clusterset name. In OCI mode, `autoshiftOciVersion: "0.0.1"` turns the `hub` clusterset into `hub-0-0-1`. A second Application with `autoshiftOciVersion: "0.0.2"` creates `hub-0-0-2`. The 2 releases run independently with no shared clustersets.

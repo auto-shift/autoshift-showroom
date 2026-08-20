@@ -360,7 +360,8 @@ oc get packagemanifest nfd -n openshift-marketplace \
   -o jsonpath='{.status.channels[0].entries[*].name}' | tr ' ' '\n' | head -4
 ----
 
-. Pick 2 adjacent versions. Remove the `-version` label you added above, and declare an allow-list instead. Note this goes under a `config:` key alongside `labels:`, not inside it:
+. Pick 2 adjacent versions. Remove the `-version` label you added above, and add an allow-list
+under the `config:` key you created in Module 3. Do not start a second `config:` block
 +
 [source,yaml]
 ----
@@ -413,21 +414,14 @@ This is how a fleet does operator upgrades with AutoShift. You do not approve In
 Leaving `startingCSV` empty lets OLM choose where to begin while still constraining where the operator may end up, which is usually what you want for a clusterset of existing clusters.
 ====
 
-. Remove the config block again. This was a preview, and Module 5 builds a `config:` block properly:
-+
-[source,role="execute"]
-----
-sed -i '/^    config:/,$d' autoshift/values/clustersets/hub-minimal.yaml
-tail -3 autoshift/values/clustersets/hub-minimal.yaml
-----
-+
 [IMPORTANT]
 ====
-Do not skip this step, and do not leave the block in place intending to add to it later.
+Add these keys *inside* the existing `config:` block. A YAML mapping may not contain the same key
+twice, and a second `config:` at the same indentation does not raise an error: the parser keeps the
+last one and silently discards the first, taking the Quay settings from Module 3 with it.
 
-A YAML mapping may not contain the same key twice. If you append a second `config:` at the same indentation, most parsers take the last one and discard the first, without an error. The Argo CD sync succeeds, the policy renders, and the allow-list you set here is simply gone.
-
-That is the failure mode to remember from this exercise: a values file can be wrong in a way that produces no error anywhere. When config you declared does not appear in the rendered ConfigMap, check for a duplicate key before checking anything else.
+That is the failure mode to remember from this exercise. A values file can be wrong in a way that
+renders cleanly, applies cleanly, and quietly drops configuration you rely on.
 ====
 
 == Exercise 3: Disable Node Feature Discovery

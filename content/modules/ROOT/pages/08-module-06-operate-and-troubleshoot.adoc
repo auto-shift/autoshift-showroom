@@ -166,9 +166,67 @@ NAME                          REMEDIATION ACTION   COMPLIANCE STATE
 policy-selfmanagedhub-labels  enforce              Compliant
 ----
 
+=== Optional: the AutoShift console plugin
+
+Everything in this toolkit is a `oc` command. AutoShift also ships a read-only console plugin that
+presents the same information in the OpenShift web console: clustersets, the resolution chain behind
+each setting, and policy compliance per cluster.
+
+It is hub-only, because it reads the hub-side ConfigMaps you traced in Module 2, and it is opt-in:
+
+[source,yaml]
+----
+      autoshift-console: 'true'
+----
+
+The plugin is built per OpenShift minor and the policy derives the image tag from the cluster's own
+running version, so a cluster always pulls its matching build. Three policies deliver it:
+`policy-autoshift-console` deploys it, `policy-autoshift-console-enable` registers it with the
+console once its pods are available, and `policy-autoshift-console-available` reports if it never
+becomes available.
+
+[source,role="execute"]
+----
+oc get policy -n policies-autoshift | grep autoshift-console
+oc get pods -n autoshift-console
+----
+
+The tag is derived, not configured. On a 4.22 cluster you get the 4.22 build:
+
+[source,role="execute"]
+----
+oc get deploy autoshift-console -n autoshift-console \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+----
+
+----
+quay.io/autoshift/autoshift-console-plugin:ocp4.22
+----
+
+Registration appends rather than replaces, so the Red Hat Advanced Cluster Management plugins stay
+where they are:
+
+[source,role="execute"]
+----
+oc get console.operator.openshift.io cluster -o jsonpath='{.spec.plugins}{"\n"}'
+----
+
+----
+["autoshift-console","networking-console-plugin","monitoring-plugin","mce","acm"]
+----
+
+Once the pods are running, reload the web console. The **AutoShift** section appears in the Fleet
+management perspective, alongside the Red Hat Advanced Cluster Management views.
+
+[NOTE]
+====
+The plugin is community-supported and optional. Nothing in this workshop depends on it, and every
+exercise remains doable entirely from the command line.
+====
+
 == Exercise 2: Dry run mode as the fleet-wide safety switch
 
-Start this one before you read about it. Dry run does not take effect instantly: the ApplicationSet re-renders every policy, and Argo CD has to re-sync more than 50 Applications, which takes several minutes to work through the fleet.
+Start this one before you read about it. Dry run does not take effect instantly: the ApplicationSet re-renders every policy, and Argo CD has to re-sync every Application, which takes several minutes to work through the fleet.
 
 So flip it on now and read while it propagates. That is the same pattern Module 3 used for the registry and the cluster, applied at a smaller scale.
 

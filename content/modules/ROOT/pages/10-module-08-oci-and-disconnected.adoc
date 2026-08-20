@@ -39,6 +39,8 @@ Fallbacks A and B together cover the same conceptual ground as the full path.
 
 == Learning objectives
 
+image::autoshift-oci-disconnected.svg[Releases are assembled on a connected machine, mirrored, and carried into the disconnected site]
+
 By the end of this module, you'll be able to:
 
 * Render every PolicyGenerator directory into stock Helm charts and explain why OCI mode needs no CMP sidecar
@@ -194,6 +196,22 @@ Add these labels under the `hub:` clusterset in `autoshift/values/clustersets/hu
       quay-source-namespace: openshift-marketplace
 ----
 
+AutoShift ships no bootstrap Job, so the first Quay user is created through the registry API. That
+endpoint is only reachable when both flags are set before the registry rolls out. Add a `config:`
+block to the same `hub:` clusterset, as a sibling of `labels:`:
+
+[source,yaml]
+----
+    config:
+      quay:
+        bootstrap:
+          userInitialize: true
+          xhrOnly: false
+----
+
+Set both back to their defaults after the workshop. They exist to bootstrap a registry that has no
+identity provider in front of it; a production deployment uses OpenID Connect instead.
+
 Do not set `odf-version` or `quay-version`. Setting a version pin feeds that value into the OperatorPolicy's ClusterServiceVersion (CSV) allow-list and constrains which CSVs OLM is permitted to install. If the pinned version is not what OLM wants to install on the current channel, the OperatorPolicy stays `NonCompliant` until the channel produces that exact CSV. Leave the allow-list open and let OLM choose the current version.
 
 === Step 2: Apply
@@ -248,16 +266,30 @@ QUAY_ROUTE=$(oc get route -n quay-enterprise \
   -o jsonpath='{.items[0].spec.host}')
 ----
 
-The `ConsoleLink` created by the Quay policy is also visible in the OpenShift web console under the application launcher. Check there for the registry URL and admin credentials if the Job's output is not immediately visible in the namespace.
+AutoShift runs no bootstrap Job, so no user exists yet and no credential Secret is created for you.
+Creating the first user in Red Hat Quay is an API-only operation, which is why the values file sets
+`userInitialize: true` and `xhrOnly: false`. You set those in Module 3, or in Step 1 if you installed
+the registry here.
 
-The Job runs in the `quay-enterprise` namespace and writes 4 Secrets. The 2 you need are `quayadmin`, holding the superuser credentials, and `quaydevel`, holding the credentials for the non-superuser account the Job also creates:
+Create the superuser now. Choose your own password:
 
 [source,role="execute"]
 ----
-oc get secret -n quay-enterprise quayadmin quaydevel quay-pull-secret quay-integration
+QUAY_ROUTE=$(oc get route registry-quay -n quay-enterprise -o jsonpath='{.spec.host}')
+QUAY_PASSWORD='workshopQuay1!'
+
+curl -sk -X POST "https://${QUAY_ROUTE}/api/v1/user/initialize" \
+  -H 'Content-Type: application/json' \
+  --data "{\"username\":\"quayadmin\",\"password\":\"${QUAY_PASSWORD}\",\"email\":\"quayadmin@example.com\",\"access_token\":true}"
 ----
 
-`quayadmin` carries the keys `token`, `password`, and `basic`. `basic` is a pre-encoded value suitable for a registry login. The Job also creates `quay-pull-secret` as a `kubernetes.io/dockerconfigjson` Secret, and `quay-integration` holding an API token.
+The response contains an `access_token`. The endpoint refuses to run once any user exists, so it
+cannot be replayed: a second call returns `Cannot initialize user in a non-empty database`. If you
+see that on your first call, a user already exists and you will need those credentials rather than
+the ones you just chose.
+
+The `ConsoleLink` created by the Quay policy is visible in the OpenShift web console under the
+application launcher.
 
 Read the registry route:
 
@@ -297,8 +329,16 @@ helm upgrade --install autoshift ./autoshift \
 
 [source,role="execute"]
 ----
-oc rollout status deployment/argocd-repo-server -n openshift-gitops
+oc rollout status deployment/infra-gitops-repo-server -n openshift-gitops
 ----
+
+[NOTE]
+====
+The Argo CD instance AutoShift runs is named by `argoName` in
+`policies/stable/openshift-gitops/values.yaml`, which defaults to `infra-gitops`. Every workload it
+owns is prefixed with that name, so the repo server is `infra-gitops-repo-server`, not
+`argocd-repo-server`. The repo server itself runs under the `default` service account.
+====
 
 === Step 7: Log in to the registry
 
@@ -307,7 +347,7 @@ oc rollout status deployment/argocd-repo-server -n openshift-gitops
 helm registry login $QUAY_ROUTE
 ----
 
-Enter the admin credentials from Step 5 when prompted.
+Enter `quayadmin` and the password you chose in Step 5 when prompted.
 
 === Step 8: Render and push
 
@@ -320,8 +360,18 @@ make render-policy-charts VERSION=0.1.0
 
 [source,role="execute"]
 ----
-make push-charts VERSION=0.1.0 REGISTRY=$QUAY_ROUTE
+make push-charts VERSION=0.1.0 REGISTRY=$QUAY_ROUTE REGISTRY_NAMESPACE=quayadmin
 ----
+
+[NOTE]
+====
+`REGISTRY_NAMESPACE` defaults to `autoshift`, which is an *organization* name. Red Hat Quay creates
+repositories on first push, but it never creates organizations, so pushing to `autoshift/` on a
+registry where that organization does not exist fails with `401 UNAUTHORIZED` on every chart.
+
+Pushing under `quayadmin` works because a user namespace always exists. On a production registry you
+would create the organization once and keep the default.
+====
 
 The target pushes bootstrap charts to `oci://$QUAY_ROUTE/autoshift/bootstrap`, the main chart to `oci://$QUAY_ROUTE/autoshift`, and every policy chart to `oci://$QUAY_ROUTE/autoshift/policies`. Do not use `make release`. That target also rewrites chart versions across the working tree, which is only appropriate for a proper tagged release.
 
@@ -338,8 +388,16 @@ helm upgrade --install autoshift ./autoshift \
   -f autoshift/values/clustersets/managed-minimal.yaml \
   -f autoshift/values/clusters/spoke-aws-1.yaml \
   --set autoshiftOciRegistry=true \
-  --set "autoshiftOciRepo=oci://$QUAY_ROUTE/autoshift/policies"
+  --set autoshiftOciVersion=0.1.0 \
+  --set "autoshiftOciRepo=oci://$QUAY_ROUTE/quayadmin/policies"
 ----
+
+[NOTE]
+====
+`autoshiftOciVersion` is required in OCI mode and must match the `VERSION` you pushed. The chart
+rejects the upgrade without it, because a mutable `latest` tag is unreliable with Argo CD OCI.
+====
+
 
 === Step 10: Observe the ApplicationSet switch
 
@@ -350,7 +408,7 @@ Inspect the ApplicationSet to confirm the generator type has changed:
 [source,role="execute"]
 ----
 oc get applicationset autoshift-policies -n openshift-gitops \
-  -o jsonpath='{.spec.generators[0]}' | python3 -m json.tool
+  -o yaml | sed -n '/generators:/,/template:/p'
 ----
 
 The output contains a `list:` key. No Application references a `policies/` path in a Git repository. No CMP sidecar is configured anywhere in the ArgoCD namespace.
@@ -568,45 +626,53 @@ Any string matching `X.Y.Z` or `X.Y.Z-suffix` is valid.
 
 === ArgoCD repo server cannot pull charts from the OCI registry
 
-*Issue:* Argo CD Applications stay in an `Unknown` or `OutOfSync` state after switching to OCI mode. The repo server logs show a TLS or authentication error.
+The Applications show `Unknown` sync with:
 
-*Cause:* Either the registry credentials are missing from the ArgoCD service accounts, or the registry's CA certificate is not in the repo server trust bundle.
-
-*Fix:* Create and link the registry credentials secret, then restart the ArgoCD components:
-
-[source,role="execute"]
 ----
-oc create secret docker-registry autoshift-oci-creds \
-  --docker-server=$QUAY_ROUTE \
-  --docker-username=admin \
-  --docker-password=<password> \
-  -n openshift-gitops
+failed to resolve revision "0.1.0": cannot get digest for revision 0.1.0:
+HEAD ".../v2/quayadmin/policies/<chart>/manifests/0.1.0": response status code 401: Unauthorized
 ----
 
-[source,role="execute"]
-----
-oc patch serviceaccount argocd-repo-server \
-  -n openshift-gitops \
-  --type='json' \
-  -p='[{"op":"add","path":"/imagePullSecrets/-","value":{"name":"autoshift-oci-creds"}}]'
-----
+Red Hat Quay creates repositories as private, so an anonymous pull is rejected.
+
+*Simplest fix: make the pushed repositories public.* The charts contain no secrets. In the Quay web
+console, open each repository under your namespace, then Settings, then Repository Visibility, and
+set it to public. Argo CD then pulls anonymously and no credential is involved.
+
+*If the repositories must stay private*, register the credential with Argo CD. Note this is a
+`repo-creds` entry, not a `repository` entry: Argo CD matches it as a URL *prefix*, and each
+Application points at its own chart path under `policies/`, so a per-repository entry does not
+match. Note also that patching `imagePullSecrets` onto a service account does not help, because
+that only governs the kubelet pulling container images for pods, while Argo CD fetches OCI charts
+inside the repo-server process.
 
 [source,role="execute"]
 ----
-oc patch serviceaccount argocd-applicationset-controller \
-  -n openshift-gitops \
-  --type='json' \
-  -p='[{"op":"add","path":"/imagePullSecrets/-","value":{"name":"autoshift-oci-creds"}}]'
+oc apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: quay-oci-creds
+  namespace: openshift-gitops
+  labels:
+    argocd.argoproj.io/secret-type: repo-creds
+stringData:
+  url: oci://$QUAY_ROUTE/quayadmin/policies
+  type: helm
+  enableOCI: "true"
+  insecure: "true"
+  username: quayadmin
+  password: <the password you set in Step 5>
+EOF
 ----
+
+Then force a refresh on one Application to confirm before waiting on the rest:
 
 [source,role="execute"]
 ----
-oc rollout restart deployment/argocd-repo-server \
-  deployment/argocd-applicationset-controller \
-  -n openshift-gitops
+oc annotate applications.argoproj.io autoshift-advanced-cluster-management \
+  -n openshift-gitops argocd.argoproj.io/refresh=hard --overwrite
 ----
-
-If the error is TLS-related, confirm that `gitops-cluster-ca-bundle: 'true'` is set in your values file and that the cluster's ingress CA is in the cluster-wide proxy trust store.
 
 === NooBaa does not become Available after 20 minutes
 

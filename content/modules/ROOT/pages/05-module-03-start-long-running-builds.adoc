@@ -50,11 +50,43 @@ Module 8 publishes AutoShift to an Open Container Initiative (OCI) registry. It 
 
 Quay needs object storage. Rather than a full ODF deployment with Ceph and dedicated storage nodes, `odf-multi-cloud-gateway: standalone` brings up NooBaa alone. That is what makes a registry viable on a single lab cluster: the shipped `QuayRegistry` sets `objectstorage: managed: true`, and NooBaa satisfies it.
 
-. Append the registry labels to `hub-minimal.yaml`. The 6-space indentation places them inside the `hubClusterSets.hub.labels` block, the same as every label you have added so far:
+. Write the hub clusterset file. It declares the registry, and adds the `config:` section Quay needs
+before it rolls out.
 +
 [source,role="execute"]
 ----
-cat >> autoshift/values/clustersets/hub-minimal.yaml << 'EOF'
+cat > autoshift/values/clustersets/hub-minimal.yaml << 'EOF'
+# Minimum Hub Cluster Configuration
+hubClusterSets:
+  hub:
+    config:
+      # Quay ships no bootstrap Job, so the registry starts with no users. Module 8 creates the
+      # first one through the registry API, and that endpoint is only reachable when these are
+      # set BEFORE Quay rolls out.
+      quay:
+        bootstrap:
+          userInitialize: true
+          xhrOnly: false
+    labels:
+      # Required: OpenShift version for image mirroring, cluster installs and upgrades
+      openshift-version: '4.22.8'
+
+      # Required: Indicates this is a self-managed hub cluster
+      self-managed: 'true'
+
+      ### OpenShift GitOps (REQUIRED)
+      gitops: 'true'
+      gitops-subscription-name: openshift-gitops-operator
+      gitops-disable-default-argocd: 'true'
+      gitops-channel: gitops-1.21
+      gitops-source: redhat-operators
+      gitops-source-namespace: openshift-marketplace
+
+      ### Advanced Cluster Management (AUTOMATIC)
+      acm-subscription-name: advanced-cluster-management
+      acm-channel: release-2.17
+      acm-source: redhat-operators
+      acm-source-namespace: openshift-marketplace
 
       ### OpenShift Data Foundation, NooBaa only
       odf: 'true'
@@ -517,6 +549,38 @@ If you want to glance at progress between modules, these are the 2 commands. Nei
 oc get policy -n {policy_namespace} | grep -E 'odf|quay'
 oc get clusterdeployment -A
 ----
+
+== Troubleshooting
+
+=== ClusterDeployment reports ProvisionStopped with InstallAttemptsLimitReached
+
+Check the installer container rather than the `hive` container. The `hive` container only stages
+binaries; the failure is in `installer`:
+
+[source,role="execute"]
+----
+POD=$(oc get pods -n spoke-aws-1 --no-headers | awk '/provision/ {print $1}' | tail -1)
+oc logs "$POD" -n spoke-aws-1 -c installer --tail=60 | grep -iE 'error|failed'
+----
+
+If you see `Failed to allocate Elastic IP` and `NatGatewaysReconciliationFailed`, the AWS account is
+out of Elastic IPs. The default quota is 5 per region, and the hub cluster already consumes several
+for its own NAT gateways, so a second cluster has none left. The installer reports this indirectly
+as `infrastructure was not ready`, which does not mention addresses at all.
+
+Confirm it:
+
+[source,role="execute"]
+----
+aws ec2 describe-addresses --query 'length(Addresses)' --output text
+aws service-quotas get-service-quota --service-code ec2 --quota-code L-0263D0A3 \
+  --query 'Quota.Value' --output text
+----
+
+If those two numbers are equal, the account is at its limit. Release unused addresses, request a
+quota increase, or run the spoke install in a region or account that is not already hosting the hub.
+Hive retries up to `installAttemptsLimit` times and then stops, so nothing recovers on its own once
+the limit is reached.
 
 == Learning Outcomes
 
