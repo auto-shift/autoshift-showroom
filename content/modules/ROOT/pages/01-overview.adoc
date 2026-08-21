@@ -28,7 +28,7 @@ AutoShift deploys in 3 phases:
 . *Bootstrap.* Install Red Hat Advanced Cluster Management on the hub cluster with `helm install`,
 then Red Hat OpenShift GitOps. The order matters, for the reason given below.
 . *Deploy AutoShift.* Create an Argo CD Application pointing at the `autoshift/` Helm chart.
-. *Policy fan-out.* The ApplicationSet auto-discovers every directory under `policies/*` and
+. *Policy fan-out.* The ApplicationSet auto-discovers every directory under `+policies/*+` and
 deploys each as a separate Argo CD Application. No manual registration required.
 
 After phase 3, the framework manages itself. The `openshift-gitops` and
@@ -52,7 +52,7 @@ feature label to a `ManagedCluster` object by hand.
 The flow has 4 steps:
 
 . Labels are set under `hubClusterSets`, `managedClusterSets`, or `clusters` in
-`autoshift/values/clustersets/*.yaml` or `autoshift/values/clusters/*.yaml`.
+`+autoshift/values/clustersets/*.yaml+` or `+autoshift/values/clusters/*.yaml+`.
 . The `cluster-labels` Argo CD Application renders those values into ConfigMaps named
 `cluster-set.\{name}` and `managed-cluster.\{name}` in the policy namespace.
 . The `cluster-labels` policy (an ACM ConfigurationPolicy) looks up those ConfigMaps at runtime

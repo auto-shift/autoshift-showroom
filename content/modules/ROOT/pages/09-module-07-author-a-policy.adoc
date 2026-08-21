@@ -352,7 +352,7 @@ For a label that a policy intentionally consumes but that cannot have a sensible
 
 === Auto-discovery
 
-Adding the directory under `policies/stable/` is all that is needed for Argo CD to pick it up. The ApplicationSet picks it up through its `policies/<tier>/*/kustomization.yaml` file generator. On the next sync, Argo CD creates a new Application named `autoshift-web-terminal` pointing at that directory. No manual registration is needed.
+Adding the directory under `policies/stable/` is all that is needed for Argo CD to pick it up. The ApplicationSet picks it up through its `+policies/<tier>/*/kustomization.yaml+` file generator. On the next sync, Argo CD creates a new Application named `autoshift-web-terminal` pointing at that directory. No manual registration is needed.
 
 === Verify
 

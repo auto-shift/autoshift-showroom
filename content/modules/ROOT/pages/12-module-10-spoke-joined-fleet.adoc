@@ -12,7 +12,6 @@ Then you tear it down, which is not optional.
 
 == Learning objectives
 
-image::autoshift-hub-of-hubs.svg[Each hub runs its own AutoShift instance and manages only the clusters its own ACM can see]
 
 By the end of this module, you'll be able to:
 

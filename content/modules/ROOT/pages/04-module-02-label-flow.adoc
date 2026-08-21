@@ -19,7 +19,6 @@ The chain breaks at the very first link, because `local-cluster` is not in a clu
 
 == Learning objectives
 
-image::autoshift-config-and-labels.svg[The label path you are about to trace, and the config path beside it]
 
 By the end of this module, you'll be able to:
 
@@ -49,7 +48,7 @@ default
 ====
 `local-cluster` is not unassigned. ACM puts every cluster it registers into the `default` ManagedClusterSet automatically.
 
-That still leaves the chain broken, which is the point of this exercise. Your values file defines a clusterset named `hub`, so AutoShift renders a `cluster-set.hub` ConfigMap and nothing for `default`. The cluster belongs to a clusterset AutoShift knows nothing about, so no `autoshift.io/*` labels are stamped and no AutoShift policy applies.
+That still leaves the chain broken, which is the point of this exercise. Your values file defines a clusterset named `hub`, so AutoShift renders a `cluster-set.hub` ConfigMap and nothing for `default`. The cluster belongs to a clusterset AutoShift knows nothing about, so no `+autoshift.io/*+` labels are stamped and no AutoShift policy applies.
 
 List them to see all 3. `default` and `global` come from ACM. `hub` was created by the `policy-foundation` chart when you deployed AutoShift in Module 1:
 
@@ -59,7 +58,7 @@ oc get managedclusterset
 ----
 ====
 
-. Confirm that no `autoshift.io/*` labels are stamped on `local-cluster`:
+. Confirm that no `+autoshift.io/*+` labels are stamped on `local-cluster`:
 +
 [source,role="execute"]
 ----
@@ -139,6 +138,8 @@ policy-selfmanagedhub-labels                                           5m
 The `COMPLIANCE STATE` column is blank. This is the expected state before any clusterset assignment.
 
 == Exercise 2: Assign the clusterset and trace the chain
+
+image::autoshift-config-and-labels.svg[The full chain you are about to complete, with the config path that Module 5 uses beside it]
 
 In Red Hat Advanced Cluster Management, a cluster joins a ManagedClusterSet when it carries the `cluster.open-cluster-management.io/clusterset` label. Set that label now and trace what follows.
 
@@ -489,9 +490,9 @@ oc annotate policy policy-selfmanagedhub-labels -n {policy_namespace} \
 
 === The autoshift.io/owning-namespace label is absent after labels are stamped
 
-*Issue:* The `autoshift.io/*` labels from the values file are present on `local-cluster`, but `autoshift.io/owning-namespace` is absent.
+*Issue:* The `+autoshift.io/*+` labels from the values file are present on `local-cluster`, but `autoshift.io/owning-namespace` is absent.
 
-*Cause:* The cluster-labels policy stamps `owning-namespace` only when the cluster's `cluster.open-cluster-management.io/clusterset` value matches the name suffix of a `cluster-set.*` ConfigMap in the policy namespace. If those 2 values do not match, the policy resolves no owning namespace and writes no owning labels.
+*Cause:* The cluster-labels policy stamps `owning-namespace` only when the cluster's `cluster.open-cluster-management.io/clusterset` value matches the name suffix of a `+cluster-set.*+` ConfigMap in the policy namespace. If those 2 values do not match, the policy resolves no owning namespace and writes no owning labels.
 
 *Diagnosis:*
 

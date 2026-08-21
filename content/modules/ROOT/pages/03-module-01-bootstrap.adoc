@@ -232,7 +232,7 @@ Every `helm upgrade` you run in this lab stands in for a commit to your own valu
 The release name must be 11 characters or fewer. The ApplicationSet derives the policy namespace from it as `policies-<release-name>`. AutoShift's naming validator rejects any namespace that exceeds the limit. The name `autoshift` is 9 characters and is safe. The Helm default `release-name` is 21 characters and will fail the check.
 ====
 
-The ApplicationSet discovers policies with 2 Git generators, both matching files rather than directories. The first matches `policies/<tier>/*/kustomization.yaml` and picks up every PolicyGenerator directory. The second matches `policies/<tier>/*/Chart.yaml` and picks up the 4 Helm holdouts. The tiers are `stable`, `certified`, and `community`.
+The ApplicationSet discovers policies with 2 Git generators, both matching files rather than directories. The first matches `+policies/<tier>/*/kustomization.yaml+` and picks up every PolicyGenerator directory. The second matches `+policies/<tier>/*/Chart.yaml+` and picks up the 4 Helm holdouts. The tiers are `stable`, `certified`, and `community`.
 
 Each directory matches exactly 1 generator, because a policy migrated to PolicyGenerator drops its `Chart.yaml`. That is how AutoShift routes each directory to the correct source type without a per-policy list. You never register a policy by hand.
 
@@ -402,7 +402,7 @@ By completing this module, you should now understand:
 * ✓ ACM must be bootstrapped before GitOps on source installs, because the GitOps repo-server resolves its PolicyGenerator CMP init-container image from ACM's `multicluster-operators-hub-subscription` deployment at install time
 * ✓ The three-phase deployment model: bootstrap operators by hand, hand control to Argo CD via the `autoshift/` chart, then let the ApplicationSet auto-discover and deploy all charts under `policies/`
 * ✓ Starting from `hub-minimal.yaml` rather than `hub.yaml` gives you a minimal, readable starting point with only GitOps and ACM enabled
-* ✓ The ApplicationSet discovers policies with 2 Git file generators, one matching `policies/<tier>/*/kustomization.yaml` for PolicyGenerator directories and one matching `policies/<tier>/*/Chart.yaml` for the Helm holdouts. No manual registration is needed
+* ✓ The ApplicationSet discovers policies with 2 Git file generators, one matching `+policies/<tier>/*/kustomization.yaml+` for PolicyGenerator directories and one matching `+policies/<tier>/*/Chart.yaml+` for the Helm holdouts. No manual registration is needed
 * ✓ After phase 3, the GitOps and ACM policies take over management of the operators that were bootstrapped by hand, and ACM enforces their configuration going forward
 
 [.solve-button-placeholder]#solve-button-placeholder#

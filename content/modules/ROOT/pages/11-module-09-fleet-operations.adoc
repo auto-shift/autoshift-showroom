@@ -242,27 +242,11 @@ A managed cluster runs a single klusterlet agent registered to a single hub. A s
 
 2 consequences follow directly from this rule:
 
-. *Anything that must land on `hub1` is deployed by the HoH AutoShift.* Only the HoH's ACM manages `hub1`. Only the HoH can place a policy onto it. `hub1`'s own AutoShift physically cannot target `hub1`.
+. *Anything that must land on hub1 is deployed by the HoH AutoShift.* Only the HoH's ACM manages hub1, so only the HoH can place a policy onto it. The AutoShift instance running on hub1 physically cannot target hub1 itself.
 
-. *`hub1`'s own AutoShift is limited to 2 things:* configuring `hub1`'s spokes through policies that `hub1`'s ACM distributes to `spoke1` and `spoke2`, and producing `hub1`-local config ConfigMaps that ArgoCD syncs directly to `hub1` without ACM involvement.
+. *The AutoShift instance on hub1 is limited to 2 things:* configuring the spokes below it, through policies that hub1's own ACM distributes to `spoke1` and `spoke2`, and producing hub1-local config ConfigMaps that Argo CD syncs straight to hub1 without ACM involvement.
 
-[mermaid]
-....
-graph TD
-  subgraph HoH["Hub-of-Hubs"]
-    HoHACM["HoH ACM<br/>manages: HoH-self, hub1"]
-    HoHAS["AutoShift #quot;autoshift#quot;<br/>ns: policies-autoshift<br/>deploys hub1 operators + day-2 config"]
-  end
-  subgraph H1["hub1 (spoke hub)"]
-    H1ACM["hub1 ACM<br/>manages: spoke1, spoke2<br/>does NOT manage hub1"]
-    H1AS["AutoShift #quot;hub1#quot;<br/>ns: policies-hub1<br/>deploys policies for spoke1 + spoke2"]
-  end
-  S1["spoke1"]
-  S2["spoke2"]
-  HoH -->|"HoH ACM manages hub1<br/>HoH AutoShift deploys hub1 policies"| H1
-  H1 -->|"hub1 ACM manages"| S1
-  H1 -->|"hub1 ACM manages"| S2
-....
+image::autoshift-hub-of-hubs.svg[Each hub runs its own AutoShift instance and manages only the clusters its own ACM can see]
 
 The HoH values file includes both a clusterset for the HoH itself (with `self-managed: 'true'`) and entries for each spoke hub (with `self-managed: 'false'`). The `self-managed: 'false'` entries drive operator installation, day-2 configuration, and upgrades of hub1. Feature labels in `hub1.yaml`, when read by the HoH AutoShift, cause the HoH to place those policies onto hub1. Placing the same label in hub1's own AutoShift instance has no effect on hub1 itself.
 
@@ -270,7 +254,7 @@ The HoH cannot see `spoke1` or `spoke2`. They are 2 ACM boundaries away. Configu
 
 === Cross-namespace lookups
 
-The `cluster-labels` and `cluster-install` policies that execute on hub1 are authored and deployed by the HoH AutoShift. To do their job they must read the config ConfigMaps that hub1's AutoShift produced (`cluster-set.*`, `managed-cluster.*`). But the HoH has no way to know which namespace hub1's AutoShift uses. Each instance picks its own namespace independently.
+The `cluster-labels` and `cluster-install` policies that execute on hub1 are authored and deployed by the HoH AutoShift. To do their job they must read the config ConfigMaps that hub1's AutoShift produced (`+cluster-set.*+`, `+managed-cluster.*+`). But the HoH has no way to know which namespace hub1's AutoShift uses. Each instance picks its own namespace independently.
 
 So those policies never hard-code a namespace. They do a cluster-wide lookup filtered by a well-known label:
 
