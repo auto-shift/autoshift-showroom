@@ -130,6 +130,44 @@ If you are running outside the provisioned environment, verify each one before m
 * `make`
 * `go` version {go_version} or later, required for the integration tests in module 7
 
+=== Running the lab from macOS
+
+The lab bastion runs Red Hat Enterprise Linux, so every command in these modules assumes the GNU
+userland. Only 1 construct actually differs on macOS: `sed -i`, which several modules use to edit
+values files in place. BSD `sed`, which macOS ships, reads the argument after `-i` as a backup
+suffix, so the script is taken as the filename and the command fails:
+
+----
+sed: 1: "hub-minimal.yaml": extra characters at the end of p command
+----
+
+The file is left unchanged. That is the dangerous part: the edit step looks like it ran, and every
+check after it disagrees with the guide for reasons that are not obvious.
+
+Install GNU `sed` and put it ahead of the system one for the session. Run this on your Mac, not in
+the Showroom terminal, which is already on the RHEL bastion:
+
+[source,bash]
+----
+brew install gnu-sed
+export PATH="$(brew --prefix)/opt/gnu-sed/libexec/gnubin:$PATH"
+----
+
+Confirm the GNU build is the one being found:
+
+[source,bash]
+----
+sed --version | head -1
+----
+
+----
+sed (GNU sed) 4.x
+----
+
+`sed` is the only GNU-only tool the modules call, so with that on `PATH` every command runs verbatim.
+Adding `coreutils` alongside it is cheap insurance if you stray outside the written steps, because it
+supplies `timeout`, `date -d` and the rest of the GNU userland that macOS lacks.
+
 === Network
 
 * Outbound access to `github.com` to clone the AutoShift repository in module 1

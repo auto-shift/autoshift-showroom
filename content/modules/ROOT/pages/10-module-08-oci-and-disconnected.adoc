@@ -107,7 +107,8 @@ tar tzf .helm-charts/policies/advanced-cluster-management-0.0.0-dev.tgz | head
 ----
 advanced-cluster-management/Chart.yaml
 advanced-cluster-management/values.yaml
-advanced-cluster-management/templates/
+advanced-cluster-management/templates/policies.yaml
+advanced-cluster-management/files/rendered.yaml
 ----
 +
 The rendered output is a standard Helm chart. ArgoCD pulls this from the registry and runs `helm template` on it. No kustomize, no PolicyGenerator plugin, no CMP sidecar is involved.
@@ -250,20 +251,20 @@ After the `QuayRegistry` is ready, the `create-admin-user` Job runs and the `Con
 
 === Step 5: Retrieve the registry route
 
-Get the Quay route hostname:
+Get the Quay route hostname. Name the route rather than taking the first one in the namespace: the Quay Operator creates several routes there, and the registry endpoint is `registry-quay`, matching the `QuayRegistry` named `registry` that the policy deploys:
 
 [source,role="execute"]
 ----
-oc get route -n quay-enterprise \
-  -o jsonpath='{.items[0].spec.host}'
+oc get route registry-quay -n quay-enterprise \
+  -o jsonpath='{.spec.host}{"\n"}'
 ----
 
 Set it in your shell:
 
 [source,role="execute"]
 ----
-QUAY_ROUTE=$(oc get route -n quay-enterprise \
-  -o jsonpath='{.items[0].spec.host}')
+QUAY_ROUTE=$(oc get route registry-quay -n quay-enterprise \
+  -o jsonpath='{.spec.host}')
 ----
 
 AutoShift runs no bootstrap Job, so no user exists yet and no credential Secret is created for you.
@@ -278,12 +279,16 @@ Create the superuser now. Choose your own password:
 QUAY_ROUTE=$(oc get route registry-quay -n quay-enterprise -o jsonpath='{.spec.host}')
 QUAY_PASSWORD='workshopQuay1!'
 
-curl -sk -X POST "https://${QUAY_ROUTE}/api/v1/user/initialize" \
+QUAY_INIT=$(curl -sk -X POST "https://${QUAY_ROUTE}/api/v1/user/initialize" \
   -H 'Content-Type: application/json' \
-  --data "{\"username\":\"quayadmin\",\"password\":\"${QUAY_PASSWORD}\",\"email\":\"quayadmin@example.com\",\"access_token\":true}"
+  --data "{\"username\":\"quayadmin\",\"password\":\"${QUAY_PASSWORD}\",\"email\":\"quayadmin@example.com\",\"access_token\":true}")
+
+echo "$QUAY_INIT"
+QUAY_TOKEN=$(printf '%s' "$QUAY_INIT" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
 ----
 
-The response contains an `access_token`. The endpoint refuses to run once any user exists, so it
+The response contains an `access_token`, captured above as `$QUAY_TOKEN`. Keep it: Step 8 uses it to
+create the organization you push into. The endpoint refuses to run once any user exists, so it
 cannot be replayed: a second call returns `Cannot initialize user in a non-empty database`. If you
 see that on your first call, a user already exists and you will need those credentials rather than
 the ones you just chose.
@@ -351,29 +356,60 @@ Enter `quayadmin` and the password you chose in Step 5 when prompted.
 
 === Step 8: Render and push
 
-Re-render with a real version string, then push. `REGISTRY` takes the route hostname without a protocol prefix:
+Re-render with a real version string, then push. `REGISTRY` takes the route hostname without a protocol prefix.
 
+. Create the `autoshift` organization. Red Hat Quay creates repositories on first push but never creates organizations, so the namespace has to exist before any chart lands in it:
++
+[source,role="execute"]
+----
+curl -sk -X POST "https://${QUAY_ROUTE}/api/v1/organization/" \
+  -H "Authorization: Bearer ${QUAY_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  --data '{"name":"autoshift","email":"autoshift@example.com"}'
+----
++
+----
+"Created"
+----
++
+Re-running it returns `A user or organization with this name already exists`, which is harmless.
+
+. Render the PolicyGenerator directories to Helm charts:
++
 [source,role="execute"]
 ----
 make render-policy-charts VERSION=0.1.0
 ----
 
+. Package the bootstrap charts and the 4 Helm holdouts. `render-policy-charts` writes only `.helm-charts/policies/`, and `push-charts` also expects `.helm-charts/bootstrap/`. Skip this and the push fails on its first action with `.helm-charts/bootstrap/*.tgz: no such file`, retried 5 times before it gives up:
++
 [source,role="execute"]
 ----
-make push-charts VERSION=0.1.0 REGISTRY=$QUAY_ROUTE REGISTRY_NAMESPACE=quayadmin
+make package-charts VERSION=0.1.0
+----
+
+. Push:
++
+[source,role="execute"]
+----
+make push-charts VERSION=0.1.0 REGISTRY=$QUAY_ROUTE
 ----
 
 [NOTE]
 ====
-`REGISTRY_NAMESPACE` defaults to `autoshift`, which is an *organization* name. Red Hat Quay creates
-repositories on first push, but it never creates organizations, so pushing to `autoshift/` on a
-registry where that organization does not exist fails with `401 UNAUTHORIZED` on every chart.
+`REGISTRY_NAMESPACE` defaults to `autoshift`, which is why no override appears on the push command.
+That default is an *organization* name, and it only resolves because you created the organization a
+moment ago. Skip that step and every chart fails with `401 UNAUTHORIZED`, which reads like a
+credentials problem and is not one: the namespace simply does not exist.
 
-Pushing under `quayadmin` works because a user namespace always exists. On a production registry you
-would create the organization once and keep the default.
+If you cannot create an organization, for example on a registry where you are not a superuser, push
+under your own user namespace instead by adding `REGISTRY_NAMESPACE=quayadmin`. A user namespace
+always exists. Every path below, and in Step 9, changes to match.
 ====
 
-The target pushes bootstrap charts to `oci://$QUAY_ROUTE/autoshift/bootstrap`, the main chart to `oci://$QUAY_ROUTE/autoshift`, and every policy chart to `oci://$QUAY_ROUTE/autoshift/policies`. Do not use `make release`. That target also rewrites chart versions across the working tree, which is only appropriate for a proper tagged release.
+Every path is built from `REGISTRY_NAMESPACE`, so the target pushes bootstrap charts to `oci://$QUAY_ROUTE/autoshift/bootstrap`, the main chart to `oci://$QUAY_ROUTE/autoshift`, and every policy chart to `oci://$QUAY_ROUTE/autoshift/policies`. That is the same layout as the published release at `oci://quay.io/autoshift/`, which is the point of keeping the default.
+
+The main chart is the one exception. `package-charts` packages each chart at the version in its own `Chart.yaml`, which is not `0.1.0`, while `push-charts` looks for `autoshift-0.1.0.tgz` by exact name. That file does not exist, so the main chart is quietly skipped and the target still exits 0. The bootstrap and policy charts push by glob and are unaffected, and Step 9 pulls only from `/policies`, so the walkthrough is unaffected. Aligning the main chart is what `make release` does by rewriting chart versions across the working tree. Do not run it here: it is only appropriate for a proper tagged release.
 
 === Step 9: Redeploy AutoShift from OCI
 
@@ -389,7 +425,7 @@ helm upgrade --install autoshift ./autoshift \
   -f autoshift/values/clusters/spoke-aws-1.yaml \
   --set autoshiftOciRegistry=true \
   --set autoshiftOciVersion=0.1.0 \
-  --set "autoshiftOciRepo=oci://$QUAY_ROUTE/quayadmin/policies"
+  --set "autoshiftOciRepo=oci://$QUAY_ROUTE/autoshift/policies"
 ----
 
 [NOTE]
@@ -473,11 +509,13 @@ helm upgrade --install autoshift ./autoshift \
 
 With `disconnected-mirror: 'true'` and `mirror-catalog-suffix: 'mirror'`, the ternary in every operator policy resolves `source:` to `<original-source>-mirror`. For operators whose default source is `redhat-operators`, the resolved value becomes `redhat-operators-mirror`.
 
-Read the resolved source from any OperatorPolicy on the cluster. If you enabled an operator in an earlier module, pick that one:
+Read the resolved source from any OperatorPolicy on the cluster. If you enabled an operator in an earlier module, pick that one.
+
+OperatorPolicy objects are created by the replicated policy on the cluster they target, so they live in that cluster's namespace, not in the policy namespace. On the hub that is `local-cluster`:
 
 [source,role="execute"]
 ----
-oc get operatorpolicy -n policies-autoshift -o yaml | grep 'source:'
+oc get operatorpolicy -n local-cluster -o yaml | grep 'source:'
 ----
 
 All `source:` fields now end in `-mirror`. No policy code changed. The ternary evaluated the cluster label and built the alternate string at hub template resolution time.
@@ -630,7 +668,7 @@ The Applications show `Unknown` sync with:
 
 ----
 failed to resolve revision "0.1.0": cannot get digest for revision 0.1.0:
-HEAD ".../v2/quayadmin/policies/<chart>/manifests/0.1.0": response status code 401: Unauthorized
+HEAD ".../v2/autoshift/policies/<chart>/manifests/0.1.0": response status code 401: Unauthorized
 ----
 
 Red Hat Quay creates repositories as private, so an anonymous pull is rejected.
@@ -657,7 +695,7 @@ metadata:
   labels:
     argocd.argoproj.io/secret-type: repo-creds
 stringData:
-  url: oci://$QUAY_ROUTE/quayadmin/policies
+  url: oci://$QUAY_ROUTE/autoshift/policies
   type: helm
   enableOCI: "true"
   insecure: "true"
@@ -692,11 +730,11 @@ oc get pods -n openshift-storage | grep -v Running | grep -v Completed
 oc describe noobaa/noobaa -n openshift-storage | grep -A 10 Conditions
 ----
 
-If the OperatorPolicy has not yet reached `Compliant`, the ODF operator may still be installing. Check:
+If the OperatorPolicy has not yet reached `Compliant`, the ODF operator may still be installing. Check the cluster namespace, not the policy namespace:
 
 [source,role="execute"]
 ----
-oc get operatorpolicy -n policies-autoshift | grep odf
+oc get operatorpolicy -n local-cluster | grep odf
 ----
 
 === Catalog sources remain mirrored after removing the disconnected label

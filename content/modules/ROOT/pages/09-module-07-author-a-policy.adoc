@@ -269,11 +269,13 @@ The test fails at the label contract stage. The `placement.yaml` you generated r
                autoshift/values/clustersets/_example.yaml (for hub/cluster-set labels) or
                autoshift/values/clusters/_example.yaml (for per-cluster labels)
           once added, re-run: go test -tags integration -run TestPipeline_EndToEnd ./tools/internal/resolver/...
-    e2e_test.go:473: label contract: 395 OK, 6 missing, 0 orphaned
+    e2e_test.go:473: label contract: <N> OK, 6 missing, 0 orphaned
 FAIL
 FAIL	github.com/auto-shift/autoshiftv2/tools/internal/resolver	11.729s
 ----
 +
+`<N>` stands for the number of labels already declared across the `_example*.yaml` files. It climbs as the catalog grows, so read the `missing` count, not that one.
+
 All 6 keys of the operator contract are reported, not just the enable flag. The shared `components/operator-install` chart consumes every one of them, including the optional `-version` pin, so every one has to be declared.
 +
 [WARNING]

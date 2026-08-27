@@ -113,7 +113,7 @@ oc get configurationpolicy,operatorpolicy -n local-cluster
 
 When a resource shows NonCompliant, describe it:
 
-[source,role="execute"]
+[source,bash]
 ----
 oc describe configurationpolicy <name> -n local-cluster
 ----
@@ -406,7 +406,7 @@ grep 'node-feature-discovery' autoshift/values/clustersets/hub-minimal.yaml
       node-feature-discovery-subscription-name: nfd
       node-feature-discovery-source: redhat-operators
       node-feature-discovery-source-namespace: openshift-marketplace
-      node-feature-discovery-version: 'nfd.4.22.0-202506191600'
+      node-feature-discovery-version: 'nfd.4.22.0-202608191301'
 ----
 +
 `node-feature-discovery-channel` no longer appears.
@@ -503,7 +503,7 @@ grep 'node-feature-discovery' autoshift/values/clustersets/hub-minimal.yaml
       node-feature-discovery-subscription-name: nfd
       node-feature-discovery-source: redhat-operators
       node-feature-discovery-source-namespace: openshift-marketplace
-      node-feature-discovery-version: 'nfd.4.22.0-202506191600'
+      node-feature-discovery-version: 'nfd.4.22.0-202608191301'
       node-feature-discovery-channel: {nfd_channel}
 ----
 
@@ -585,7 +585,7 @@ oc get applications.argoproj.io -n openshift-gitops --no-headers | awk '$2!="Syn
 
 An Application stuck at `Unknown` is the cause. Read its condition:
 
-[source,role="execute"]
+[source,bash]
 ----
 oc get applications.argoproj.io <app-name> -n openshift-gitops \
   -o jsonpath='{.status.conditions}{"\n"}'
@@ -630,7 +630,7 @@ The word `cached` is the important part. The generation attempt timed out once, 
 
 *Fix:* Force a hard refresh so Argo CD discards the cached result and regenerates:
 
-[source,role="execute"]
+[source,bash]
 ----
 oc annotate applications.argoproj.io <app-name> -n openshift-gitops \
   argocd.argoproj.io/refresh=hard --overwrite
@@ -653,26 +653,37 @@ git diff autoshift/values/
 
 Then describe the hub-level policy for the specific message:
 
-[source,role="execute",subs="attributes"]
+[source,bash,subs="attributes"]
 ----
 oc describe policy <policy-name> -n {policy_namespace} | tail -30
 ----
 
 *Fix:* Restore the missing label in the values file and re-apply. The resolved manifest will be invalid until the label is present.
 
-=== Application is Synced but the Policy does not appear in the hub namespace
+=== Application is Synced but the Policy has no compliance state
 
-*Issue:* `oc get applications.argoproj.io autoshift-<name> -n openshift-gitops` shows `Synced Healthy`, but `oc get policy -n policies-autoshift | grep <name>` returns nothing.
+*Issue:* `oc get applications.argoproj.io autoshift-<name> -n openshift-gitops` shows `Synced Healthy`, and `oc get policy -n {policy_namespace}` lists the policy, but its `COMPLIANCE STATE` column is blank.
 
-*Common cause:* The Placement predicate selects no cluster, so ACM has no target and reports no compliance. The Policy object exists but its status section is empty. Check the PlacementDecision:
+*Common cause:* The Placement predicate selects no cluster, so ACM has no target to evaluate against and never writes a status. The Policy object is present and correct. It simply has no work to do.
 
-[source,role="execute",subs="attributes"]
+Do not go looking for a missing Policy. Argo CD deploys every policy directory it discovers, so the root Policy sits in the policy namespace whether or not any cluster is selected. What varies is `status`, not existence:
+
+[source,bash,subs="attributes"]
+----
+oc get policy <policy-name> -n {policy_namespace} \
+  -o jsonpath='compliant={.status.compliant}{"\n"}'
+----
+
+An empty value confirms that no cluster was selected. Read the selection by cluster name rather than by whether the PlacementDecision object exists, because ACM creates one for every Placement whether or not it selects anything:
+
+[source,bash,subs="attributes"]
 ----
 oc get placementdecision -n {policy_namespace} \
-  -l cluster.open-cluster-management.io/placement=placement-<policy-name>
+  -l cluster.open-cluster-management.io/placement=placement-<policy-name> \
+  -o yaml | sed -n 's/.*clusterName: //p'
 ----
 
-If no PlacementDecision exists, verify the required label is on `local-cluster`:
+If that prints nothing, verify the required label is on `local-cluster`:
 
 [source,role="execute"]
 ----
@@ -685,7 +696,7 @@ oc get managedcluster local-cluster -o yaml | grep 'autoshift.io/'
 
 *Cause:* The replication state machine can deadlock when a dependency transitions Compliant and then changes again quickly. Delete the replicated policy in the cluster namespace to force re-creation:
 
-[source,role="execute"]
+[source,bash]
 ----
 oc delete policy policies-autoshift.<policy-name> -n local-cluster
 ----
@@ -700,7 +711,7 @@ ACM recreates the object within seconds and re-evaluates the dependency from the
 
 *Diagnosis:*
 
-[source,role="execute"]
+[source,bash]
 ----
 oc get catalogsource -n openshift-marketplace | grep redhat
 oc get installplan -n <operator-namespace>
@@ -714,7 +725,7 @@ If the CatalogSource shows `READY: false`, the issue is catalog connectivity. If
 
 *Cause:* ACM evaluates each policy on the `evaluationInterval` setting. The default is `watch`, which is event-driven and should react within seconds. If it is not triggering, force evaluation manually:
 
-[source,role="execute",subs="attributes"]
+[source,bash,subs="attributes"]
 ----
 oc annotate policy <policy-name> -n {policy_namespace} \
   policy.open-cluster-management.io/trigger-update="$(date +%s)" --overwrite
@@ -734,7 +745,7 @@ oc logs -n open-cluster-management-agent-addon \
 
 *Diagnosis:* Argo CD compares the rendered manifests from the git source against the live cluster state. An OutOfSync Application means the live resource differs from the rendered output. Describe the Application for the specific diff:
 
-[source,role="execute"]
+[source,bash]
 ----
 oc describe application autoshift-<name> -n openshift-gitops | tail -20
 ----
