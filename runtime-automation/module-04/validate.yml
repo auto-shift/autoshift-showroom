@@ -30,14 +30,24 @@
       changed_when: false
       failed_when: false
 
-    - validation_check:
-        check: "{{ nfd.stdout | default('') | length > 0 }}"
-        msg: "The node-feature-discovery label is declared (value: {{ nfd.stdout | default('absent') }})"
+    # A single validation_check per module. The action plugin accepts only
+    # pass_msg/error_msg (never msg) and returns on the first failing check, so
+    # every condition is folded into one check and the detail goes into one
+    # report. buttons.js turns each ✅/❌ line into a step chip.
+    - name: Evaluate the checks
+      ansible.builtin.set_fact:
+        _nfd_ok: "{{ nfd.stdout | default('') | length > 0 }}"
+        _csv_ok: "{{ csv.stdout == 'Succeeded' }}"
+        _placed_ok: "{{ nfd.stdout != 'true' or 'local-cluster' in (placed.stdout | default('')) }}"
+
+    - name: Build the report
+      ansible.builtin.set_fact:
+        _report: |
+          {{ '✅' if _nfd_ok else '❌' }} The node-feature-discovery label is declared (value: {{ nfd.stdout | default('absent') or 'absent' }})
+          {{ '✅' if _csv_ok else '❌' }} The NFD operator installed (CSV phase: {{ csv.stdout | default('absent') or 'absent' }})
+          {{ '✅' if _placed_ok else '❌' }} Placement matches the label state (label={{ nfd.stdout | default('absent') or 'absent' }}, placed on: {{ placed.stdout_lines | default([]) | join(', ') or 'none' }})
 
     - validation_check:
-        check: "{{ csv.stdout == 'Succeeded' }}"
-        msg: "The NFD operator installed (CSV phase: {{ csv.stdout | default('absent') }})"
-
-    - validation_check:
-        check: "{{ nfd.stdout != 'true' or 'local-cluster' in (placed.stdout | default('')) }}"
-        msg: "Placement matches the label state (label={{ nfd.stdout | default('absent') }}, placed on: {{ placed.stdout_lines | default([]) | join(', ') or 'none' }})"
+        check: "{{ _nfd_ok and _csv_ok and _placed_ok }}"
+        pass_msg: "{{ _report }}"
+        error_msg: "{{ _report }}"

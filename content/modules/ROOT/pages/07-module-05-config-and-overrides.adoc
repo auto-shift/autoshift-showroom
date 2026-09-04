@@ -62,50 +62,70 @@ uwm:
     storage: '10Gi'
 ----
 
-`hub-minimal.yaml` has only a `labels:` block. Confirm that no `config:` block exists yet:
+`hub-minimal.yaml` already has a `config:` block. You created it in Module 3, where Quay needed `bootstrap.userInitialize` set before the registry rolled out, and Module 4 added a `node-feature-discovery` key inside it as a preview of this module. What you add here is a third key, `uwm`, alongside them.
 
-. Check the file for a config key at the right indentation:
+. Confirm the block is there and see what it holds:
 +
 [source,role="execute"]
 ----
-grep '^    config:' autoshift/values/clustersets/hub-minimal.yaml || echo "no config block found"
+grep -A8 '^    config:' autoshift/values/clustersets/hub-minimal.yaml
 ----
 +
 ----
-no config block found
+    config:
+      # Quay ships no bootstrap Job, so the registry starts with no users. Module 8 creates the
+      # first one through the registry API, and that endpoint is only reachable when these are
+      # set BEFORE Quay rolls out.
+      quay:
+        bootstrap:
+          userInitialize: true
+          xhrOnly: false
 ----
++
+The comments came from the heredoc you ran in Module 3. What matters is that `config:` sits at 4-space indentation, a peer of `labels:` under `hub:`.
 
-. Review the end of the file to see where the config block will be added:
+. Review the end of the file, where the labels live:
 +
 [source,role="execute"]
 ----
 tail -5 autoshift/values/clustersets/hub-minimal.yaml
 ----
 +
-The last lines are label entries at 6-space indentation inside the `labels:` block. The `config:` block will go at 4-space indentation, the same level as `labels:`, under `hub:`. Moving from 6-space to 4-space indentation closes the `labels:` block and opens a peer key.
+The last lines are label entries at 6-space indentation inside the `labels:` block. The `uwm:` settings go inside the existing `config:` block; the `uwm: 'true'` enable flag goes in `labels:`.
 
 === Verify
 
-Confirm there is no existing config block before proceeding:
+Confirm there is exactly 1 config block before proceeding:
 
 [source,role="execute"]
 ----
-grep '^    config:' autoshift/values/clustersets/hub-minimal.yaml || echo "no config block found"
+grep -c '^    config:' autoshift/values/clustersets/hub-minimal.yaml
 ----
 
 ----
-no config block found
+1
 ----
+
+A values file with 2 `config:` keys at the same indentation is the failure Module 4 warned about: YAML keeps the last and silently discards the first.
 
 
 
 == Exercise 2: Add a config block and read it back
 
-A single `cat >>` appends 2 things to `hub-minimal.yaml`: the `uwm: 'true'` label at 6-space indentation (inside the existing `labels:` block), and the `config:` block at 4-space indentation (which closes the labels block and opens a peer key under `hub:`).
+The command below is `cat >`, not `cat >>`: it rewrites `hub-minimal.yaml` whole rather than appending. That is deliberate. Adding a second `config:` key by appending is the silent-clobber failure Module 4 warned about, and rewriting the file puts every student on the same known state regardless of how far they took Module 4 Exercise 2.
 
-The config block uses the minimum fields the UWM policy needs to produce a complete `user-workload-monitoring-config` ConfigMap: Prometheus retention and storage, and Thanos Ruler retention and storage. There is no `storageClass`, for the reason given in Exercise 1. Fields left without values would produce an invalid resource quantity in the rendered ConfigMap.
+Read the heredoc before you run it. It carries the Quay config from Module 3, the cluster-install labels you added in Module 3, the NFD labels left at `node-feature-discovery: 'false'` from the end of Module 4, and adds `uwm` in both places.
 
-Add the `uwm` label and its config block:
+Two things from Module 4 Exercise 2 are deliberately not carried forward: the
+`config.node-feature-discovery` version allow-list, and the `node-feature-discovery-version`
+label. Both were pins on a specific ClusterServiceVersion that is unique to your cluster, so
+neither can live in a shared file. They have served their purpose as a demonstration. Without
+the pin, the operator tracks its channel again, which is the normal state for the rest of the
+lab.
+
+The config block uses the minimum fields the UWM policy needs to produce a complete `user-workload-monitoring-config` ConfigMap: Prometheus retention and storage, and Thanos Ruler retention and storage. There is no `storageClass`, so the cluster's default storage class is used. Fields left without values would produce an invalid resource quantity in the rendered ConfigMap.
+
+Rewrite the file with the `uwm` label and its config block added:
 
 [source,role="execute"]
 ----
@@ -159,6 +179,11 @@ hubClusterSets:
       quay-source-namespace: openshift-marketplace
 
       gitops-cluster-ca-bundle: 'true'
+
+      ### Cluster install, enabled in Module 3. Removing these withdraws the
+      ### cluster-install policies while the spoke is still provisioning.
+      cluster-install: 'true'
+      acm-enable-provisioning: 'true'
 
       ### Node Feature Discovery, disabled at the end of Module 4
       node-feature-discovery: 'false'
@@ -408,17 +433,29 @@ Wait for `Compliant`. ACM evaluates the policy after every reconcile cycle.
 
 *Cause:* The `config:` key is at the wrong YAML indentation level. If it sits at 6-space indentation (inside `labels:`), YAML treats it as a label key named `config`, not as a peer of `labels:` under `hub:`. The `cluster-set-config.hub` ConfigMap ends up with an empty config.
 
-*Diagnosis:* Run `helm template` locally to see what the chart renders:
+*Diagnosis:* Check the indentation directly. `config:` must sit at 4 spaces, a peer of `labels:` under `hub:`. This prints the line if it is correct and nothing if it is not:
 
 [source,role="execute"]
 ----
-helm template autoshift ./autoshift \
-  -f autoshift/values/global.yaml \
-  -f autoshift/values/clustersets/hub-minimal.yaml \
-  | grep -A 5 'cluster-set-config.hub'
+grep -n '^    config:' autoshift/values/clustersets/hub-minimal.yaml \
+  || echo "no config: block at 4-space indentation"
 ----
 
-Look for `config:` in the output. If the data section shows `config: '{}'`, the block was parsed as a label. Fix the indentation so `config:` aligns with `labels:` at 4 spaces under `hub:`.
+----
+4:    config:
+----
+
+If you get the fallback message, the block is indented too deeply and YAML has parsed it as a label named `config` rather than a peer of `labels:`. Move it out 2 spaces.
+
+Then confirm what actually reached the hub:
+
+[source,role="execute",subs="attributes"]
+----
+oc get configmap cluster-set-config.hub -n {policy_namespace} \
+  -o jsonpath='{.data.config}{"\n"}'
+----
+
+An empty `{}` here means the block was parsed as a label and never became config.
 
 === Per-cluster override does not appear in the rendered-config
 

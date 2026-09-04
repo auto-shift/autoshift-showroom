@@ -21,14 +21,24 @@
       changed_when: false
       failed_when: false
 
-    - validation_check:
-        check: "{{ (cd.stdout | default('0') | int) == 0 }}"
-        msg: "No ClusterDeployment remains, so the spoke was torn down and billing stopped"
+    # A single validation_check per module. The action plugin accepts only
+    # pass_msg/error_msg (never msg) and returns on the first failing check, so
+    # every condition is folded into one check and the detail goes into one
+    # report. buttons.js turns each ✅/❌ line into a step chip.
+    - name: Evaluate the checks
+      ansible.builtin.set_fact:
+        _cd_ok: "{{ (cd.stdout | default('0') | int) == 0 }}"
+        _mc_ok: "{{ (mc.stdout | default('0') | int) == 0 }}"
+        _hub_ok: "{{ hub.rc == 0 }}"
+
+    - name: Build the report
+      ansible.builtin.set_fact:
+        _report: |
+          {{ '✅' if _cd_ok else '❌' }} No ClusterDeployment remains, so the spoke was torn down and billing stopped ({{ cd.stdout | default('?') }} found)
+          {{ '✅' if _mc_ok else '❌' }} No spoke ManagedCluster remains on the hub ({{ mc.stdout | default('?') }} found)
+          {{ '✅' if _hub_ok else '❌' }} The hub itself is still registered as local-cluster
 
     - validation_check:
-        check: "{{ (mc.stdout | default('0') | int) == 0 }}"
-        msg: "No spoke ManagedCluster remains on the hub"
-
-    - validation_check:
-        check: "{{ hub.rc == 0 }}"
-        msg: "The hub itself is still registered as local-cluster"
+        check: "{{ _cd_ok and _mc_ok and _hub_ok }}"
+        pass_msg: "{{ _report }}"
+        error_msg: "{{ _report }}"

@@ -41,22 +41,28 @@
       changed_when: false
       failed_when: false
 
-    - validation_check:
-        check: "{{ mch.stdout == 'Running' }}"
-        msg: "MultiClusterHub is Running (found: {{ mch.stdout | default('absent') }})"
+    # A single validation_check per module. The action plugin accepts only
+    # pass_msg/error_msg (never msg) and returns on the first failing check, so
+    # every condition is folded into one check and the detail goes into one
+    # report. buttons.js turns each ✅/❌ line into a step chip.
+    - name: Evaluate the checks
+      ansible.builtin.set_fact:
+        _mch_ok: "{{ mch.stdout == 'Running' }}"
+        _repo_ok: "{{ (repo.stdout | default('0') | int) > 0 }}"
+        _appset_ok: "{{ appset.rc == 0 }}"
+        _apps_ok: "{{ (apps.stdout_lines | default([]) | length) > 0 }}"
+        _policies_ok: "{{ (policies.stdout_lines | default([]) | length) > 0 }}"
+
+    - name: Build the report
+      ansible.builtin.set_fact:
+        _report: |
+          {{ '✅' if _mch_ok else '❌' }} MultiClusterHub is Running (found: {{ mch.stdout | default('absent') }})
+          {{ '✅' if _repo_ok else '❌' }} OpenShift GitOps repo server is available (replicas: {{ repo.stdout | default('0') }})
+          {{ '✅' if _appset_ok else '❌' }} ApplicationSet autoshift-policies exists
+          {{ '✅' if _apps_ok else '❌' }} ApplicationSet produced Applications ({{ apps.stdout_lines | default([]) | length }} found)
+          {{ '✅' if _policies_ok else '❌' }} Policies exist in {{ policy_ns }} ({{ policies.stdout_lines | default([]) | length }} found)
 
     - validation_check:
-        check: "{{ (repo.stdout | default('0') | int) > 0 }}"
-        msg: "OpenShift GitOps repo server is available"
-
-    - validation_check:
-        check: "{{ appset.rc == 0 }}"
-        msg: "ApplicationSet autoshift-policies exists"
-
-    - validation_check:
-        check: "{{ (apps.stdout_lines | default([]) | length) > 0 }}"
-        msg: "ApplicationSet produced Applications ({{ apps.stdout_lines | default([]) | length }} found)"
-
-    - validation_check:
-        check: "{{ (policies.stdout_lines | default([]) | length) > 0 }}"
-        msg: "Policies exist in {{ policy_ns }} ({{ policies.stdout_lines | default([]) | length }} found)"
+        check: "{{ _mch_ok and _repo_ok and _appset_ok and _apps_ok and _policies_ok }}"
+        pass_msg: "{{ _report }}"
+        error_msg: "{{ _report }}"

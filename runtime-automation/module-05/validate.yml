@@ -25,22 +25,28 @@
       changed_when: false
       failed_when: false
 
-    - validation_check:
-        check: "{{ rc.rc == 0 }}"
-        msg: "The rendered-config ConfigMap exists for local-cluster"
+    # A single validation_check per module. The action plugin accepts only
+    # pass_msg/error_msg (never msg) and returns on the first failing check, so
+    # every condition is folded into one check and the detail goes into one
+    # report. buttons.js turns each ✅/❌ line into a step chip.
+    - name: Evaluate the checks
+      ansible.builtin.set_fact:
+        _rc_ok: "{{ rc.rc == 0 }}"
+        _uwm_block_ok: "{{ cfg.uwm is defined }}"
+        _retention_ok: "{{ (cfg.uwm.prometheus.retention | default('')) in ['7d', '24h'] }}"
+        _storage_ok: "{{ (cfg.uwm.prometheus.storage | default('')) == '10Gi' }}"
+        _label_ok: "{{ uwm.stdout == 'true' }}"
+
+    - name: Build the report
+      ansible.builtin.set_fact:
+        _report: |
+          {{ '✅' if _rc_ok else '❌' }} The rendered-config ConfigMap exists for local-cluster
+          {{ '✅' if _uwm_block_ok else '❌' }} The uwm config block reached rendered-config
+          {{ '✅' if _retention_ok else '❌' }} uwm.prometheus.retention resolved through the merge ({{ cfg.uwm.prometheus.retention | default('unset') }} — 7d with the per-cluster override applied, 24h after you clean it up)
+          {{ '✅' if _storage_ok else '❌' }} The clusterset value survived the merge (uwm.prometheus.storage is {{ cfg.uwm.prometheus.storage | default('unset') }}, expected 10Gi)
+          {{ '✅' if _label_ok else '❌' }} The uwm label is stamped on local-cluster (found: {{ uwm.stdout | default('absent') or 'absent' }})
 
     - validation_check:
-        check: "{{ cfg.uwm is defined }}"
-        msg: "The uwm config block reached rendered-config"
-
-    - validation_check:
-        check: "{{ (cfg.uwm.prometheus.retention | default('')) == '7d' }}"
-        msg: "The per-cluster override won (uwm.prometheus.retention is {{ cfg.uwm.prometheus.retention | default('unset') }}, expected 7d)"
-
-    - validation_check:
-        check: "{{ (cfg.uwm.prometheus.storage | default('')) == '10Gi' }}"
-        msg: "The clusterset value survived the merge (uwm.prometheus.storage is {{ cfg.uwm.prometheus.storage | default('unset') }}, expected 10Gi)"
-
-    - validation_check:
-        check: "{{ uwm.stdout == 'true' }}"
-        msg: "The uwm label is stamped on local-cluster"
+        check: "{{ _rc_ok and _uwm_block_ok and _retention_ok and _storage_ok and _label_ok }}"
+        pass_msg: "{{ _report }}"
+        error_msg: "{{ _report }}"

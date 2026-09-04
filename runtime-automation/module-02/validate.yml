@@ -34,18 +34,26 @@
       changed_when: false
       failed_when: false
 
-    - validation_check:
-        check: "{{ cs.stdout == 'hub' }}"
-        msg: "local-cluster is assigned to the hub clusterset (found: {{ cs.stdout | default('unassigned') }})"
+    # A single validation_check per module. The action plugin accepts only
+    # pass_msg/error_msg (never msg) and returns on the first failing check, so
+    # every condition is folded into one check and the detail goes into one
+    # report. buttons.js turns each ✅/❌ line into a step chip.
+    - name: Evaluate the checks
+      ansible.builtin.set_fact:
+        _cs_ok: "{{ cs.stdout == 'hub' }}"
+        _stamped_ok: "{{ (stamped.stdout | default('0') | int) > 0 }}"
+        _cm_ok: "{{ cm.rc == 0 }}"
+        _pol_ok: "{{ pol.stdout == 'Compliant' }}"
+
+    - name: Build the report
+      ansible.builtin.set_fact:
+        _report: |
+          {{ '✅' if _cs_ok else '❌' }} local-cluster is assigned to the hub clusterset (found: {{ cs.stdout | default('unassigned') or 'unassigned' }})
+          {{ '✅' if _stamped_ok else '❌' }} autoshift.io labels are stamped on local-cluster ({{ stamped.stdout | default(0) }} found)
+          {{ '✅' if _cm_ok else '❌' }} ConfigMap cluster-set.hub exists in {{ policy_ns }}
+          {{ '✅' if _pol_ok else '❌' }} policy-selfmanagedhub-labels is Compliant (found: {{ pol.stdout | default('none') or 'none' }})
 
     - validation_check:
-        check: "{{ (stamped.stdout | default('0') | int) > 0 }}"
-        msg: "autoshift.io labels are stamped on local-cluster ({{ stamped.stdout | default(0) }} found)"
-
-    - validation_check:
-        check: "{{ cm.rc == 0 }}"
-        msg: "ConfigMap cluster-set.hub exists in {{ policy_ns }}"
-
-    - validation_check:
-        check: "{{ pol.stdout == 'Compliant' }}"
-        msg: "policy-selfmanagedhub-labels is Compliant (found: {{ pol.stdout | default('none') }})"
+        check: "{{ _cs_ok and _stamped_ok and _cm_ok and _pol_ok }}"
+        pass_msg: "{{ _report }}"
+        error_msg: "{{ _report }}"

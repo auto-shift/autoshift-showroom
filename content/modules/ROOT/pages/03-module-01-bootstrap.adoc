@@ -44,6 +44,8 @@ ls -1
 ----
 +
 ----
+AGENTS.md
+CLAUDE.md
 CODE_OF_CONDUCT.md
 CONTRIBUTING.md
 LICENSE
@@ -189,12 +191,12 @@ oc get pod -n openshift-gitops -l app.kubernetes.io/name=infra-gitops-repo-serve
 
 ----
 NAME                                        READY   STATUS    RESTARTS   AGE
-infra-gitops-repo-server-7fbbcbd54b-g2sq9   2/2     Running   0          3m
-infra-gitops-repo-server-7fbbcbd54b-l4b27   2/2     Running   0          3m
-infra-gitops-repo-server-7fbbcbd54b-phhtq   2/2     Running   0          3m
+infra-gitops-repo-server-78454c9bb8-4ck8n   2/2     Running   0          3m
 ----
 
 The Argo CD instance AutoShift creates is named `infra-gitops`, not `openshift-gitops`, so the pod label selector carries that name. `2/2` counts the repo-server container and the PolicyGenerator CMP sidecar.
+
+The number of pods depends on `gitops.repo.replicas` in the values file and is not what this step is checking. What matters is that each pod reads `2/2` and `Running`.
 
 A `RESTARTS` count above 0, or a `CrashLoopBackOff` status, indicates the init-container image resolution failed. See the Troubleshooting section.
 

@@ -31,21 +31,30 @@ oc get pods -n spoke-aws-1 | grep provision
 ----
 
 ----
-spoke-aws-1-0-provision-xxxxx   3/3   Running   0   3m
+spoke-aws-1-0-xxxxx-provision-xxxxx   1/1   Running   0   3m
 ----
++
+The name carries the attempt number and 2 random segments, so yours will differ. Once the
+install finishes the pod reports `0/1  Completed`.
 
 [source,role="execute"]
 ----
 oc logs -n spoke-aws-1 \
   $(oc get pods -n spoke-aws-1 -o name | grep provision) \
-  -c hive -f
+  -c installer -f
 ----
 
-The log streams the OpenShift installer output. Phases and approximate durations:
+Read the `installer` container. The pod also has a `hive` container, but it only stages binaries
+and finishes in seconds; its log contains nothing about the install.
 
-* *Bootstrap (0-15 min):* Hive creates the VPC, subnets, NAT gateways, Elastic IPs, and Route 53 records. The bootstrap EC2 instance starts. The control plane nodes start and pull their ignition configs from the bootstrap node.
-* *Control plane (15-25 min):* The 3 control plane nodes become Ready. The bootstrap node is destroyed.
-* *Workers and operators (25-40 min):* The 3 worker nodes join. All cluster operators reach Available.
+The log streams the OpenShift installer output. You provisioned a single-node cluster in Module 3,
+so the phases are:
+
+* *Bootstrap:* Hive creates the VPC, subnets, NAT gateway, Elastic IP, and Route 53 records. The bootstrap EC2 instance starts, then the single control-plane node starts and pulls its ignition config from it.
+* *Control plane:* The node becomes Ready and the bootstrap instance is destroyed.
+* *Operators:* Cluster operators roll out and reach Available. Expect a long run of "Still waiting for the cluster to initialize" lines while that happens; the list of unavailable operators shrinking is the sign of progress.
+
+Budget roughly 40 minutes end to end, though it varies with the region and the day.
 
 Watch the `ClusterDeployment` conditions for high-level status:
 
@@ -101,10 +110,13 @@ oc get managedcluster spoke-aws-1 -o json | grep '"autoshift\.io/'
             "autoshift.io/node-feature-discovery-source": "redhat-operators",
             "autoshift.io/node-feature-discovery-source-namespace": "openshift-marketplace",
             "autoshift.io/node-feature-discovery-subscription-name": "nfd",
-            "autoshift.io/openshift-version": "4.22.8",
+            "autoshift.io/openshift-version": "4.22.11",
             "autoshift.io/owning-deployment": "autoshift",
             "autoshift.io/owning-namespace": "policies-autoshift",
 ----
++
+Your `openshift-version` will differ. Module 3 wrote that value into `managed-minimal.yaml` by
+reading it off your own cluster, so it matches whatever release your lab was provisioned at.
 
 Every label from the `managed` clusterset values file is there, plus `autoshift.io/owning-namespace` and `autoshift.io/owning-deployment` stamped automatically by the policy, and `autoshift.io/cluster-type: spoke` derived from the fact that the clusterset was declared under `managedClusterSets`.
 
@@ -204,7 +216,12 @@ Watch it deprovision. This takes roughly 10 to 15 minutes:
 oc get clusterdeployment -n spoke-aws-1 -w
 ----
 
-Once the `ClusterDeployment` is deleted, confirm the `ManagedCluster` is also gone:
+The AWS resources are fully removed once that job completes. You can confirm it directly:
+instances, virtual private clouds, and Elastic IPs for the cluster are all released.
+
+*Step 3. Detach the cluster and remove its namespace.* Destroying the cloud resources does not
+remove the hub-side objects. The `ManagedCluster` remains, flipping to `AVAILABLE: Unknown`, and
+its namespace stays behind:
 
 [source,role="execute"]
 ----
@@ -212,29 +229,52 @@ oc get managedcluster spoke-aws-1
 ----
 
 ----
-Error from server (NotFound): managedclusters.cluster.open-cluster-management.io "spoke-aws-1" not found
+NAME          HUB ACCEPTED   JOINED   AVAILABLE   AGE
+spoke-aws-1   true           True     Unknown     22h
 ----
 
-The AWS resources are fully removed.
-
-=== Verify teardown
-
-Confirm no provision pods remain and the namespace is gone:
+This is the same behaviour the warning above describes. The prereqs policy created the
+`ManagedCluster`, and with `createCluster: 'false'` the policy has simply stopped managing it —
+nothing deletes it. Remove it and the namespace explicitly:
 
 [source,role="execute"]
 ----
-oc get pods -n spoke-aws-1 2>/dev/null || echo "namespace gone"
+oc delete managedcluster spoke-aws-1
+oc delete namespace spoke-aws-1
+----
+
+=== Verify teardown
+
+Confirm the namespace is gone. Test the namespace itself: `oc get pods` in an empty namespace
+still exits 0, so it cannot tell you whether the namespace exists:
+
+[source,role="execute"]
+----
+oc get namespace spoke-aws-1 || echo "namespace gone"
 ----
 
 ----
 namespace gone
 ----
 
+And confirm the cluster has left the fleet:
+
+[source,role="execute"]
+----
+oc get managedcluster
+----
+
+----
+NAME            HUB ACCEPTED   JOINED   AVAILABLE   AGE
+local-cluster   true           True     True        22h
+----
+
 == Troubleshooting
 
 === ClusterDeployment stuck and not progressing
 
-Find the provision pod and read the Hive log:
+Find the provision pod and read the installer log. Read the `installer` container, not `hive`:
+the `hive` container only stages binaries and its log holds nothing about the failure.
 
 [source,role="execute"]
 ----
@@ -245,7 +285,7 @@ oc get pods -n spoke-aws-1
 ----
 oc logs -n spoke-aws-1 \
   $(oc get pods -n spoke-aws-1 -o name | grep provision) \
-  -c hive
+  -c installer --tail=60 | grep -iE 'error|failed'
 ----
 
 Common causes:
@@ -266,12 +306,16 @@ Delete the existing secret, generate a correct key, and recreate the secret:
 oc delete secret aws-creds -n cluster-install-secrets
 ----
 
+The key from Module 3 is still on disk, and `ssh-keygen` stops to ask before overwriting it, so
+remove it first:
+
 [source,role="execute"]
 ----
+rm -f ~/.ssh/ocp-cluster ~/.ssh/ocp-cluster.pub
 ssh-keygen -t ecdsa -b 521 -N '' -f ~/.ssh/ocp-cluster
 ----
 
-Then re-run the secret creation step from Exercise 1 with the corrected key.
+Then re-run the secret creation step from Module 3, Exercise 2, with the corrected key.
 
 === ClusterDeployment shows installed but ManagedCluster is absent
 
@@ -316,11 +360,11 @@ oc get configmap cluster-set.managed -n {policy_namespace}
 ----
 
 ----
-NAME                DATA   AGE
-cluster-set.managed   1      ...
+NAME                  DATA   AGE
+cluster-set.managed   2      ...
 ----
 
-If the ConfigMap is absent, the `cluster-labels` policy has no label data to read for the `managed` clusterset. Confirm `autoshift/values/clustersets/managed.yaml` is included in the `helm upgrade` command and that ArgoCD has synced.
+If the ConfigMap is absent, the `cluster-labels` policy has no label data to read for the `managed` clusterset. Confirm `autoshift/values/clustersets/managed-minimal.yaml` is included in the `helm upgrade` command and that ArgoCD has synced.
 
 == Learning Outcomes
 

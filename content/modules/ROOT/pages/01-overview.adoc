@@ -101,9 +101,13 @@ or `Automatic` and stays `Automatic`, because there is no `Manual` value to set 
 holds the managed Subscription at `installPlanApproval: Manual` so OLM cannot upgrade past the
 allowed set. Module 4 has you read both and compare them.
 
-The reason the operator contract is label-driven is architectural: ACM's `OperatorPolicy` can only
-read labels from the `ManagedCluster` object in the hub's placement context. Labels are the only
-data available at that point.
+The operator contract is label-driven because labels are the data a Placement predicate can match
+on: selecting which clusters get an operator is a label decision, and it has to be, because that is
+what ACM evaluates when deciding where to send a policy.
+
+Labels are not the only data a policy can read, though. An operator policy can also look up the
+`\{cluster}.rendered-config` ConfigMap through a hub template, which is how the `-version` pin can
+alternatively be expressed as a `config:` block. Module 4 shows both forms.
 
 Arbitrary structured configuration, such as a list of trusted registries or an S3 endpoint for an
 object-storage backend, cannot fit in a label. That configuration goes into a `config:` block in
@@ -126,10 +130,12 @@ in place by omitting it. Removal propagates.
 
 == What you will build
 
-The lab runs on a single hub cluster. The hub is registered as `local-cluster` and is the only
-managed cluster in scope. You start from `hub-minimal.yaml`, which enables only Red Hat Advanced
-Cluster Management and Red Hat OpenShift GitOps. You add capabilities one at a time and observe
-each step of the mechanism before moving to the next.
+The lab starts on a single hub cluster, registered as `local-cluster`. You begin from
+`hub-minimal.yaml`, which enables only Red Hat Advanced Cluster Management and Red Hat OpenShift
+GitOps, and add capabilities one at a time, observing each step of the mechanism before moving to
+the next. In module 3 you declare a second cluster on AWS; AutoShift provisions it in the
+background and module 10 verifies that it inherited its configuration from its clusterset without
+you touching it directly.
 
 [cols="^1,3,^1",options="header"]
 |===

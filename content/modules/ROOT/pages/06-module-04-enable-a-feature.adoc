@@ -26,7 +26,7 @@ By the end of this module, you'll be able to:
 
 == Exercise 1: Enable Node Feature Discovery
 
-`hub-minimal.yaml` contains no NFD labels. The cluster-labels policy currently stamps no `autoshift.io/node-feature-discovery` label on `local-cluster`, so the NFD Placement selects nothing and no NFD policy runs. You add all 5 labels.
+`hub-minimal.yaml` contains no NFD labels. The cluster-labels policy currently stamps no `autoshift.io/node-feature-discovery` label on `local-cluster`, so the NFD Placement does not select `local-cluster` and no NFD policy is replicated to it. You add all 5 labels.
 
 Every operator policy in AutoShift reads the same 5-label contract:
 
@@ -36,7 +36,7 @@ Every operator policy in AutoShift reads the same 5-label contract:
 * `<component>-source`: the CatalogSource name. Defaults to `redhat-operators`.
 * `<component>-source-namespace`: the namespace where the CatalogSource lives. Defaults to `openshift-marketplace`.
 
-`hub.yaml` carries the reference form for NFD near line 391, with the operator disabled and the version label commented out:
+`hub.yaml` carries the reference form for NFD, with the operator disabled and the version label commented out:
 
 [source,yaml]
 ----
@@ -46,12 +46,12 @@ node-feature-discovery-subscription-name: nfd
 node-feature-discovery-channel: stable
 node-feature-discovery-source: redhat-operators
 node-feature-discovery-source-namespace: openshift-marketplace
-# node-feature-discovery-version: 'nfd.4.18.0-202511261113'
+# node-feature-discovery-version: 'nfd.4.22.0-202608191301'
 ----
 
 [NOTE]
 ====
-The commented version in `hub.yaml` names a 4.18-era ClusterServiceVersion (CSV) and is illustrative only. It shows the format, `nfd.<ocp-minor>.<patch>-<timestamp>`, not a value to copy. Your cluster runs a newer release, so the CSV you see in Exercise 2 will differ. Always read the CSV name off the cluster rather than copying an example.
+The commented version in `hub.yaml` is illustrative only. It shows the format, `nfd.<ocp-minor>.<patch>-<timestamp>`, not a value to copy. The build timestamp identifies one specific catalog build, so the CSV you read in Exercise 2 will differ even on the same OpenShift minor. Always read the CSV name off the cluster rather than copying an example.
 ====
 
 You write the same 5 labels into `hub-minimal.yaml` with the enable flag set to `'true'`.
@@ -60,11 +60,11 @@ You write the same 5 labels into `hub-minimal.yaml` with the enable flag set to 
 +
 [source,role="execute"]
 ----
-grep -c 'node-feature-discovery' autoshift/values/clustersets/hub-minimal.yaml || echo "0 matches"
+grep -c 'node-feature-discovery' autoshift/values/clustersets/hub-minimal.yaml
 ----
 +
 ----
-0 matches
+0
 ----
 
 . Append all 5 labels to the file. The 6-space indentation places them inside the `hubClusterSets.hub.labels` block:
@@ -132,34 +132,53 @@ oc get managedcluster local-cluster -o json | grep '"autoshift\.io/node-feature-
 +
 ----
             "autoshift.io/node-feature-discovery": "true",
+            "autoshift.io/node-feature-discovery-channel": "stable",
+            "autoshift.io/node-feature-discovery-source": "redhat-operators",
+            "autoshift.io/node-feature-discovery-source-namespace": "openshift-marketplace",
+            "autoshift.io/node-feature-discovery-subscription-name": "nfd",
 ----
++
+All 5 contract labels are stamped, not just the enable flag.
 
-. The NFD Placement predicate requires `autoshift.io/node-feature-discovery: 'true'`. The label is now present, so ACM creates a PlacementDecision:
+. The NFD Placement predicate requires `autoshift.io/node-feature-discovery: 'true'`. The label is now present, so `local-cluster` appears in the PlacementDecision. Read the cluster names rather than the object, because a single PlacementDecision carries the selection for every cluster the predicate matches:
 +
 [source,role="execute",subs="attributes"]
 ----
 oc get placementdecision -n {policy_namespace} \
-  -l cluster.open-cluster-management.io/placement=placement-policy-node-feature-discovery
+  -l cluster.open-cluster-management.io/placement=placement-policy-node-feature-discovery \
+  -o yaml | sed -n 's/.*clusterName: //p' | grep -x local-cluster
 ----
 +
 ----
-NAME                                                 AGE
-placement-policy-node-feature-discovery-decision-1   1m
+local-cluster
 ----
 
-. ACM dispatched `policy-nfd-operator-install` to `local-cluster` through the PlacementBinding. Confirm the policy is Compliant:
+. ACM dispatched `policy-nfd-operator-install` to `local-cluster` through the PlacementBinding. Confirm the replicated policy is Compliant on this cluster. Give the operator a few moments to install first; it is not instant:
 +
-[source,role="execute",subs="attributes"]
+[source,role="execute"]
 ----
-oc get policy policy-nfd-operator-install -n {policy_namespace}
+oc get policy -n local-cluster | grep nfd-operator-install
 ----
 +
 ----
-NAME                        REMEDIATION ACTION   COMPLIANCE STATE   AGE
-policy-nfd-operator-install   enforce            Compliant          2m
+policies-autoshift.policy-nfd-operator-install   enforce   Compliant   2m
 ----
++
+[NOTE]
+====
+Read the replica in `local-cluster`, not the root policy in `{policy_namespace}`.
 
-. The OperatorPolicy inside `policy-nfd-operator-install` created a Subscription named `nfd` in the `openshift-nfd` namespace. Confirm the Subscription exists:
+The root policy aggregates compliance across *every* cluster its Placement selects. From
+Module 3 onward that includes `spoke-aws-1`, which carries the same NFD labels and is
+registered as a ManagedCluster within a few minutes of the apply, long before it finishes
+installing. A cluster with no verdict yet contributes no result, so the root policy's
+`COMPLIANCE STATE` column reads **blank** until the spoke is fully up.
+
+That blank is correct behavior, not a fault. The replica in the cluster namespace answers the
+question this step is actually asking: did the policy succeed *here*.
+====
+
+. The OperatorPolicy inside `policy-nfd-operator-install` created a Subscription named `nfd` in the `openshift-nfd` namespace. OLM then resolves and installs the operator, which takes a short while. Confirm the Subscription exists:
 +
 [source,role="execute"]
 ----
@@ -175,31 +194,39 @@ nfd    nfd       redhat-operators   stable
 +
 [source,role="execute"]
 ----
-oc get csv -n openshift-nfd
+oc get csv -n openshift-nfd --no-headers | awk '/^nfd\./ {print $1, $NF}'
 ----
 +
 ----
-NAME                     DISPLAY                  PHASE
-nfd.4.22.0-202506191600  Node Feature Discovery   Succeeded
+nfd.4.22.0-202608191301 Succeeded
 ----
++
+The build timestamp will differ on your cluster. What matters is `Succeeded`.
++
+[IMPORTANT]
+====
+Filter on the `nfd.` prefix. A plain `oc get csv -n openshift-nfd` lists every ClusterServiceVersion visible in that namespace, not only the one you just installed. An operator installed for all namespaces has its CSV copied into every namespace, so this one also carries at least the OpenShift GitOps operator, and any operator you enable later adds another. The rows are sorted by name, so which one lands first depends on what is installed. The next exercise reads a CSV name programmatically, and taking the wrong row there is the single easiest way to break this module.
+====
 +
 [NOTE]
 ====
 A second policy, `policy-nfd-instance-deploy`, deploys a `NodeFeatureDiscovery` custom resource (CR) into `openshift-nfd`. It carries a dependency on `policy-nfd-operator-install` and activates after the operator is installed. Both policies share a single Placement, `placement-policy-node-feature-discovery`.
+
+That Placement declares no `spec.clusterSets`, so it serves every clusterset bound to the policy namespace, not just the hub. `spoke-aws-1` carries the same 5 labels from `managed-minimal.yaml`, written in Module 3. Once it finishes installing and joins the fleet, the same Placement selects it and the same policies reach it. That is why the checks in this module filter on the cluster name.
 ====
 
 === Verify
 
-Confirm both NFD policies are Compliant before continuing:
+Confirm both NFD policies are Compliant on this cluster before continuing:
 
-[source,role="execute",subs="attributes"]
+[source,role="execute"]
 ----
-oc get policy -n {policy_namespace} | grep nfd
+oc get policy -n local-cluster | grep nfd
 ----
 
 ----
-policy-nfd-instance-deploy    enforce   Compliant   3m
-policy-nfd-operator-install   enforce   Compliant   3m
+policies-autoshift.policy-nfd-instance-deploy    enforce   Compliant   3m
+policies-autoshift.policy-nfd-operator-install   enforce   Compliant   3m
 ----
 
 == Exercise 2: Control which versions an operator may run
@@ -239,15 +266,15 @@ So `Manual` here means "ACM decides", not "nothing will upgrade". If you go look
 
 Read the current CSV name from the cluster, then use it as the version label value.
 
-. Read the installed CSV name:
+. Read the installed CSV name. Match on the `nfd.` prefix, since other operators' ClusterServiceVersions are visible in this namespace too:
 +
 [source,role="execute"]
 ----
-oc get csv -n openshift-nfd -o jsonpath='{.items[0].metadata.name}{"\n"}'
+oc get csv -n openshift-nfd --no-headers | awk '/^nfd\./ {print $1}'
 ----
 +
 ----
-nfd.4.22.0-202506191600
+nfd.4.22.0-202608191301
 ----
 +
 Your output will show the version installed in your environment. The format is typically `nfd.X.Y.Z-YYYYMMDDHHII`. Copy this value.
@@ -256,7 +283,7 @@ Your output will show the version installed in your environment. The format is t
 +
 [source,role="execute"]
 ----
-NFD_CSV=$(oc get csv -n openshift-nfd -o jsonpath='{.items[0].metadata.name}')
+NFD_CSV=$(oc get csv -n openshift-nfd --no-headers | awk '/^nfd\./ {print $1}')
 echo "      node-feature-discovery-version: '${NFD_CSV}'" \
   >> autoshift/values/clustersets/hub-minimal.yaml
 ----
@@ -270,7 +297,7 @@ tail -3 autoshift/values/clustersets/hub-minimal.yaml
 +
 ----
       node-feature-discovery-source-namespace: openshift-marketplace
-      node-feature-discovery-version: 'nfd.4.22.0-202506191600'
+      node-feature-discovery-version: 'nfd.4.22.0-202608191301'
 ----
 
 . Apply the change. The PolicyGenerator re-renders `policy-nfd-operator-install` with `startingCSV` and the `versions` allow-list set:
@@ -306,8 +333,8 @@ oc get sub nfd -n openshift-nfd -o yaml | grep -E 'startingCSV|installPlanApprov
 +
 ----
   installPlanApproval: Manual
-  startingCSV: nfd.4.22.0-202506191600
-  installedCSV: nfd.4.22.0-202506191600
+  startingCSV: nfd.4.22.0-202608191301
+  installedCSV: nfd.4.22.0-202608191301
 ----
 +
 This is the enforcement. ACM switched the Subscription to manual approval because the allow-list is populated.
@@ -343,7 +370,7 @@ oc get sub nfd -n openshift-nfd \
 ----
 
 ----
-nfd.4.22.0-202506191600
+nfd.4.22.0-202608191301
 ----
 
 The value matches the CSV you captured, and it matches the `node-feature-discovery-version` label you added to `hub-minimal.yaml`.
@@ -426,7 +453,9 @@ renders cleanly, applies cleanly, and quietly drops configuration you rely on.
 
 == Exercise 3: Disable Node Feature Discovery
 
-Setting `node-feature-discovery: 'false'` changes the label value on `local-cluster`. The Placement predicate, which matches only clusters where the label is `'true'`, stops selecting `local-cluster`. ACM deletes the PlacementDecision and removes the replicated NFD policies from the `local-cluster` namespace.
+Setting `node-feature-discovery: 'false'` changes the label value on `local-cluster`. The Placement predicate, which matches only clusters where the label is `'true'`, stops selecting `local-cluster`, and ACM removes the replicated NFD policies from the `local-cluster` namespace.
+
+What it does not do is remove NFD from the fleet. You are dropping 1 cluster out of a selection, not deleting a policy. The root policies stay in `{policy_namespace}`, because the Argo CD ApplicationSet deploys every policy directory it discovers and no label gates that. The Placement stays as well, and it still serves `spoke-aws-1`, which carries `node-feature-discovery: 'true'` from `managed-minimal.yaml`. Whether that cluster has finished installing yet only changes what the PlacementDecision lists, not what this exercise demonstrates.
 
 The Subscription itself is left on the cluster. OperatorPolicy's default behavior is to leave installed operators in place when the policy is removed. Uninstalling the operator requires manual cleanup.
 
@@ -472,28 +501,46 @@ oc get managedcluster local-cluster -o json | grep '"autoshift\.io/node-feature-
             "autoshift.io/node-feature-discovery": "false",
 ----
 
-. The Placement predicate `In ['true']` no longer matches. Confirm the PlacementDecision is gone:
+. The Placement predicate `In ['true']` no longer matches `local-cluster`. Confirm it has left the selection:
 +
 [source,role="execute",subs="attributes"]
 ----
 oc get placementdecision -n {policy_namespace} \
-  -l cluster.open-cluster-management.io/placement=placement-policy-node-feature-discovery
+  -l cluster.open-cluster-management.io/placement=placement-policy-node-feature-discovery \
+  -o yaml | sed -n 's/.*clusterName: //p' \
+  | grep -x local-cluster || echo "local-cluster is no longer selected"
 ----
 +
 ----
-No resources found in policies-autoshift namespace.
+local-cluster is no longer selected
+----
++
+Drop the final `grep` to see the whole selection. If `spoke-aws-1` has joined the fleet, it is listed there and the PlacementDecision object still exists, holding the selection for that cluster alone.
+
+. ACM removes the replicated policies from the `local-cluster` namespace. Replicas live in the namespace of the cluster they were dispatched to, so that is where to look:
++
+[source,role="execute"]
+----
+oc get policy -n local-cluster | grep nfd || echo "no nfd policies on local-cluster"
+----
++
+----
+no nfd policies on local-cluster
 ----
 
-. ACM removes the replicated policies from the `local-cluster` namespace. Confirm they are gone from the policy namespace:
+. The root policies are untouched. They are deployed by Argo CD, not by the Placement, so they remain in the policy namespace ready to serve any cluster that carries the label:
 +
 [source,role="execute",subs="attributes"]
 ----
-oc get policy -n {policy_namespace} | grep nfd || echo "no nfd policies"
+oc get policy -n {policy_namespace} -o name | grep nfd
 ----
 +
 ----
-no nfd policies
+policy.policy.open-cluster-management.io/policy-nfd-instance-deploy
+policy.policy.open-cluster-management.io/policy-nfd-operator-install
 ----
++
+This is the distinction to carry into Module 10. Disabling a component in 1 clusterset withdraws the policy from those clusters. The policy itself is still deployed, and every other clusterset that declares the component keeps it.
 
 . Check whether the Subscription and namespace remain on the cluster:
 +
@@ -507,19 +554,21 @@ NAME   PACKAGE   SOURCE             CHANNEL
 nfd    nfd       redhat-operators   stable
 ----
 +
-The Subscription is still present. ACM created it via the OperatorPolicy when the policy was active. Removing the policy binding does not trigger deletion. If you need to remove NFD entirely, delete the Subscription and the `openshift-nfd` namespace manually after this lab.
+The Subscription is still present. ACM created it via the OperatorPolicy when the policy was active. Removing the policy binding does not trigger deletion.
+
+Four things survive: the Subscription, the ClusterServiceVersion, the `openshift-nfd` namespace, and the `NodeFeatureDiscovery` custom resource the second policy created. OperatorPolicy has no operand awareness, so the operand outlives the policy that produced it. Removing NFD for real is a manual step, and it comes after the Verify below: do not run it yet.
 
 === Verify
 
-Confirm the policies are absent and the namespace remains:
+Confirm the replicas are absent from `local-cluster` and the namespace remains:
 
-[source,role="execute",subs="attributes"]
+[source,role="execute"]
 ----
-oc get policy -n {policy_namespace} | grep nfd || echo "no nfd policies"
+oc get policy -n local-cluster | grep nfd || echo "no nfd policies on local-cluster"
 ----
 
 ----
-no nfd policies
+no nfd policies on local-cluster
 ----
 
 [source,role="execute"]
@@ -532,11 +581,32 @@ NAME           STATUS   AGE
 openshift-nfd  Active   15m
 ----
 
+=== Optional cleanup, after you have finished the module
+
+Only now, and only if you want NFD gone. Everything after this point in the workshop assumes the
+namespace still exists, so skip this on a first run through: Module 5 and Module 6 both read the
+`node-feature-discovery` entries in `hub-minimal.yaml`, and Module 6 re-enables the operator.
+
+Click *Validate Module* at the bottom of this page before you run any of it. One of the checks reads
+the NFD ClusterServiceVersion, so it reports a failure once the operator is gone.
+
+Delete in operand-first order. These have no run button on purpose:
+
+[source,bash]
+----
+oc delete nodefeaturediscovery nfd-instance -n openshift-nfd
+oc delete sub nfd -n openshift-nfd
+oc delete csv -n openshift-nfd -l operators.coreos.com/nfd.openshift-nfd
+oc delete ns openshift-nfd
+----
+
+Deleting the namespace first, or removing the operator before its operand, leaves the `NodeFeatureDiscovery` CR with a finalizer and no controller left to clear it. The namespace then sits in `Terminating` indefinitely.
+
 == Troubleshooting
 
-=== Label stamped but no PlacementDecision appears
+=== Label stamped but local-cluster is not selected
 
-*Issue:* `autoshift.io/node-feature-discovery: 'true'` is on `local-cluster`, but no PlacementDecision exists for `placement-policy-node-feature-discovery`.
+*Issue:* `autoshift.io/node-feature-discovery: 'true'` is on `local-cluster`, but `local-cluster` does not appear in the PlacementDecision for `placement-policy-node-feature-discovery`, or no PlacementDecision exists at all.
 
 *Diagnosis:* The Placement requires a `ManagedClusterSetBinding` in the policy namespace that covers the `hub` ManagedClusterSet. Confirm the binding exists:
 
@@ -577,7 +647,7 @@ If the CatalogSource shows `READY: false`, the catalog is unreachable. This is a
 
 === Subscription exists but CSV does not install
 
-*Issue:* `oc get sub nfd -n openshift-nfd` returns a result, but `oc get csv -n openshift-nfd` shows nothing.
+*Issue:* `oc get sub nfd -n openshift-nfd` returns a result, but `oc get csv -n openshift-nfd --no-headers | awk '/^nfd\\./ {print $1}'` shows nothing.
 
 *Cause:* OLM creates an InstallPlan to resolve the CSV. With a version pinned, there are 2 common causes. Either the InstallPlan is waiting for approval, or the `-version` label names a CSV that does not exist in the channel so OLM cannot resolve anything to install.
 
@@ -605,7 +675,7 @@ If `startingCSV` names a CSV that is not available in the `{nfd_channel}` channe
 oc describe application autoshift-node-feature-discovery -n openshift-gitops | tail -20
 ----
 
-*Common cause:* The `-version` label value does not exactly match the CSV name OLM assigned. CSV names are case-sensitive and include the full build timestamp. Compare the value in `hub-minimal.yaml` with the output of `oc get csv -n openshift-nfd`.
+*Common cause:* The `-version` label value does not exactly match the CSV name OLM assigned. CSV names are case-sensitive and include the full build timestamp. Compare the value in `hub-minimal.yaml` with the output of `oc get csv -n openshift-nfd --no-headers | awk '/^nfd\\./ {print $1}'`.
 
 === policy-nfd-instance-deploy stays NonCompliant after operator installs
 
@@ -640,7 +710,7 @@ By completing this module, you should now understand:
 * ✓ The 5-label contract is the complete configuration interface for any OLM operator in AutoShift; writing those labels in the values file is the only action required to enable the operator across every cluster in the clusterset
 * ✓ The `-subscription-name` label cannot be omitted because `scripts/generate-imageset-config.sh` discovers which operators to mirror by reading it; an absent label makes the operator invisible to the disconnected mirror generator
 * ✓ Adding a `-version` label sets `startingCSV` and adds the version to the OperatorPolicy's `versions` allow-list. The policy's own `upgradeApproval` can only be `None` or `Automatic` and stays `Automatic`, while ACM enforces the pin by switching the managed Subscription to `installPlanApproval: Manual`. The 2 objects appear to disagree and both are correct
-* ✓ Setting the enable flag to `'false'` removes the cluster from the Placement selection and unbinds the policy, but ACM leaves the OLM Subscription and namespace in place; uninstalling the operator is a separate manual step
+* ✓ Setting the enable flag to `'false'` removes that 1 cluster from the Placement selection and deletes the replicated policies from its namespace, while the root policies and the Placement stay in the policy namespace and keep serving every other cluster that still carries the label; ACM also leaves the OLM Subscription and namespace in place, so uninstalling the operator is a separate manual step
 
 [.solve-button-placeholder]#solve-button-placeholder#
 

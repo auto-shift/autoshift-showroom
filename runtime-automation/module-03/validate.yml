@@ -40,22 +40,28 @@
       changed_when: false
       failed_when: false
 
-    - validation_check:
-        check: "{{ (keys.stdout | default('0') | int) >= 5 }}"
-        msg: "Secret aws-creds holds all 5 keys ({{ keys.stdout | default(0) }} found)"
+    # A single validation_check per module. The action plugin accepts only
+    # pass_msg/error_msg (never msg) and returns on the first failing check, so
+    # every condition is folded into one check and the detail goes into one
+    # report. buttons.js turns each ✅/❌ line into a step chip.
+    - name: Evaluate the checks
+      ansible.builtin.set_fact:
+        _keys_ok: "{{ (keys.stdout | default('0') | int) >= 5 }}"
+        _reglabels_ok: "{{ (reglabels.stdout | default('0') | int) >= 2 }}"
+        _sc_ok: "{{ sc.stdout == 'Ready' }}"
+        _quay_ok: "{{ quay.stdout == 'True' }}"
+        _cd_ok: "{{ cd.rc == 0 }}"
+
+    - name: Build the report
+      ansible.builtin.set_fact:
+        _report: |
+          {{ '✅' if _keys_ok else '❌' }} Secret aws-creds holds all 5 keys ({{ keys.stdout | default(0) }} found)
+          {{ '✅' if _reglabels_ok else '❌' }} The odf and quay labels reached local-cluster ({{ reglabels.stdout | default(0) }} of 2)
+          {{ '✅' if _sc_ok else '❌' }} StorageCluster is Ready (found: {{ sc.stdout | default('absent') or 'absent' }})
+          {{ '✅' if _quay_ok else '❌' }} QuayRegistry is Available (found: {{ quay.stdout | default('absent') or 'absent' }})
+          {{ '✅' if _cd_ok else '❌' }} ClusterDeployment spoke-aws-1 was created
 
     - validation_check:
-        check: "{{ (reglabels.stdout | default('0') | int) >= 2 }}"
-        msg: "The odf and quay labels reached local-cluster"
-
-    - validation_check:
-        check: "{{ sc.stdout == 'Ready' }}"
-        msg: "StorageCluster is Ready (found: {{ sc.stdout | default('absent') }})"
-
-    - validation_check:
-        check: "{{ quay.stdout == 'True' }}"
-        msg: "QuayRegistry is Available (found: {{ quay.stdout | default('absent') }})"
-
-    - validation_check:
-        check: "{{ cd.rc == 0 }}"
-        msg: "ClusterDeployment spoke-aws-1 was created"
+        check: "{{ _keys_ok and _reglabels_ok and _sc_ok and _quay_ok and _cd_ok }}"
+        pass_msg: "{{ _report }}"
+        error_msg: "{{ _report }}"
