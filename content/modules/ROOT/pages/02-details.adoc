@@ -129,20 +129,27 @@ If you are running outside the provisioned environment, verify each one before m
 * `git`
 * `make`
 * `go` version {go_version} or later, required for the integration tests in module 7
+* `jq`, required by `make generate-imageset` in module 8, which exits if it is absent
+* `yq`, required by `make update-versions` in module 8 and by `make validate`
+* `curl`, used to initialize Red Hat Quay in module 8
 
 === Running the lab from macOS
 
 The lab bastion runs Red Hat Enterprise Linux, so every command in these modules assumes the GNU
 userland. Only 1 construct actually differs on macOS: `sed -i`, which several modules use to edit
 values files in place. BSD `sed`, which macOS ships, reads the argument after `-i` as a backup
-suffix, so the script is taken as the filename and the command fails:
+suffix, so the script is taken as the filename and the command fails. The message varies with the
+text of the script, which is why it is rarely recognized for what it is:
 
 ----
-sed: 1: "hub-minimal.yaml": extra characters at the end of p command
+sed: 1: "autoshift/values/cluste ...": command a expects \ followed by text
+sed: 1: "global.yaml
+": extra characters at the end of g command
 ----
 
-The file is left unchanged. That is the dangerous part: the edit step looks like it ran, and every
-check after it disagrees with the guide for reasons that are not obvious.
+The command exits 1 and the file is left unchanged. That is the dangerous part: in a long block of
+output the failure is easy to scroll past, and every check after it disagrees with the guide for
+reasons that are not obvious.
 
 Install GNU `sed` and put it ahead of the system one for the session. Run this on your Mac, not in
 the Showroom terminal, which is already on the RHEL bastion:
@@ -167,6 +174,20 @@ sed (GNU sed) 4.x
 `sed` is the only GNU-only tool the modules call, so with that on `PATH` every command runs verbatim.
 Adding `coreutils` alongside it is cheap insurance if you stray outside the written steps, because it
 supplies `timeout`, `date -d` and the rest of the GNU userland that macOS lacks.
+
+=== AWS quotas, if you plan to provision the spoke
+
+Module 3 provisions a cluster on AWS. A single-node spoke needs 1 Elastic IP for its NAT
+gateway, and your hub already holds several of its own. AWS sandbox accounts commonly cap
+Elastic IPs at 5, which is not always enough for both. If there is no headroom, the install
+fails partway through network creation.
+
+Check in the AWS console before you start module 3: compare *EC2 -> Elastic IPs* against your
+quota under *Service Quotas -> EC2 -> EC2-VPC Elastic IPs*. Module 3 covers this in more detail,
+including what to do when the account is at its limit.
+
+Modules 4 to 9 do not depend on the spoke, so skipping the provisioning exercises is always an
+option.
 
 === Network
 

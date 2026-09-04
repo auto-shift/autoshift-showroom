@@ -2,40 +2,23 @@
   hosts: localhost
   connection: local
   gather_facts: false
-  vars:
-    repo: "{{ lookup('env','AUTOSHIFT_REPO') | default(lookup('env','HOME') ~ '/autoshiftv2', true) }}"
   tasks:
-    - name: Look for the scaffolded policy directory
-      ansible.builtin.stat:
-        path: "{{ repo }}/policies/stable/web-terminal"
-      register: dir
-
-    - name: Look for the four files the generator produces
-      ansible.builtin.stat:
-        path: "{{ repo }}/policies/stable/web-terminal/{{ item }}"
-      loop:
-        - kustomization.yaml
-        - policy-generator-config.yaml
-        - placement.yaml
-        - manifests/operator-install/kustomization.yaml
-      register: files
-
-    - name: Check the labels were declared in the example values
-      ansible.builtin.shell: "grep -c 'web-terminal' autoshift/values/clustersets/_example.yaml"
-      args:
-        chdir: "{{ repo }}"
-      register: declared
-      changed_when: false
-      failed_when: false
-
+    # Module 7 is entirely local: the student scaffolds policies/stable/web-terminal/
+    # in their clone of autoshiftv2, renders it with kustomize, runs the integration
+    # test, and edits autoshift/values/clustersets/_example.yaml. None of that
+    # reaches the cluster and none of it is pushed, so there is no cluster-side or
+    # remote surface to check.
+    #
+    # The checks it needs would have to read that clone. They cannot: the runner
+    # container mounts only /app/runtime-automation, /app/artifacts and /app/logs
+    # (charts/zerotouch/templates/deployment.yaml in rhpds/showroom-deployer),
+    # while the student's shell has its home on the separate terminal-lab-user-home
+    # volume. A validate that reads the filesystem here fails for every student
+    # regardless of their work.
+    #
+    # Restore the real checks once the runner mounts the student's home. Until
+    # then, say so rather than showing a check that cannot pass.
     - validation_check:
-        check: "{{ dir.stat.exists | default(false) }}"
-        msg: "The web-terminal policy directory was scaffolded"
-
-    - validation_check:
-        check: "{{ files.results | map(attribute='stat.exists') | select | list | length == 4 }}"
-        msg: "All 4 generated files are present ({{ files.results | map(attribute='stat.exists') | select | list | length }} of 4)"
-
-    - validation_check:
-        check: "{{ (declared.stdout | default('0') | int) >= 6 }}"
-        msg: "The web-terminal labels were declared in _example.yaml, satisfying the label contract"
+        check: "{{ true }}"
+        pass_msg: "✅ No automated validation for this module — the runner cannot read your local clone. Work through the Verify sections on the page."
+        error_msg: "❌ unreachable"

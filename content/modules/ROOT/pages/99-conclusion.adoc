@@ -54,17 +54,17 @@ All of this runs on the same path at every scale: set a value in git, ArgoCD rec
 
 == Next Steps
 
-The lab ran on 1 hub cluster using the local Helm dev path. A real fleet requires a few additional steps.
+The lab ran on 1 hub and 1 provisioned spoke, using the local Helm dev path. A real fleet requires a few additional steps.
 
 *Move to a git-backed deployment.* The `autoshift/` chart and values files can live in separate repositories. `docs/external-values-repo.md` covers using a site-config repository as an Argo CD Application source so the code and site configuration evolve independently.
 
-*Add a second cluster and a second clusterset.* Create a clusterset profile under `autoshift/values/clustersets/` and a per-cluster file under `autoshift/values/clusters/`. Import the cluster into ACM, assign it to the new clusterset, and trace the label flow end to end on a cluster you did not bootstrap yourself.
+*Import a cluster you did not provision.* Module 3 had AutoShift create `spoke-aws-1` for you. Take a cluster that already exists, import it into ACM by hand, assign it to a clusterset, and confirm the same label flow reaches it. Provisioning and configuration are separate concerns: everything from module 2 onward applies to any managed cluster, however it arrived.
 
 *Try a gradual rollout between 2 AutoShift versions.* Deploy a second Application with `versionedClusterSets: true`. Move 1 cluster to the new versioned clusterset. Verify compliance. Move the next wave. Confirm the first deployment goes idle when no clusters remain in its clusterset.
 
 *Enable the upgrade policy on an empty clusterset.* Set the target version labels on a new clusterset profile. Start with the clusterset empty. Move 1 cluster in. Follow the 4-policy dependency chain from channel update through completion gate. `docs/ocp-upgrade.md` covers the wave model in detail.
 
-*Stand up a hub-of-hubs tier.* The single-cluster lab cannot demonstrate the cross-namespace ConfigMap lookup that spoke-hub policies use, or the boundary between the hub-of-hubs ACM and a spoke hub's own ACM. `docs/hub-of-hubs.md` covers the exact bootstrap sequence for each tier.
+*Stand up a hub-of-hubs tier.* This lab cannot demonstrate the cross-namespace ConfigMap lookup that spoke-hub policies use, or the boundary between the hub-of-hubs ACM and a spoke hub's own ACM: `spoke-aws-1` is a managed cluster, not a hub running its own ACM. `docs/hub-of-hubs.md` covers the exact bootstrap sequence for each tier.
 
 == References
 

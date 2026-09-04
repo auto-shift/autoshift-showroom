@@ -256,7 +256,8 @@ The test fails at the label contract stage. The `placement.yaml` you generated r
 +
 ----
 --- FAIL: TestPipeline_EndToEnd (9.42s)
-    e2e_test.go:465: label contract violations — 6 key(s) consumed by policy
+    ... (stage progress lines omitted)
+    e2e_test.go:NNN: label contract violations — 6 key(s) consumed by policy
         templates but missing from all _example*.yaml files:
           autoshift.io/web-terminal (consumed by: stable/web-terminal)
           autoshift.io/web-terminal-channel (consumed by: stable/web-terminal)
@@ -269,12 +270,12 @@ The test fails at the label contract stage. The `placement.yaml` you generated r
                autoshift/values/clustersets/_example.yaml (for hub/cluster-set labels) or
                autoshift/values/clusters/_example.yaml (for per-cluster labels)
           once added, re-run: go test -tags integration -run TestPipeline_EndToEnd ./tools/internal/resolver/...
-    e2e_test.go:473: label contract: <N> OK, 6 missing, 0 orphaned
+    e2e_test.go:NNN: label contract: <N> OK, 6 missing, 0 orphaned
 FAIL
 FAIL	github.com/auto-shift/autoshiftv2/tools/internal/resolver	11.729s
 ----
 +
-`<N>` stands for the number of labels already declared across the `_example*.yaml` files. It climbs as the catalog grows, so read the `missing` count, not that one.
+`<N>` stands for the number of labels already declared across the `_example*.yaml` files. It climbs as the catalog grows, so read the `missing` count, not that one. The `e2e_test.go:NNN` line numbers shift as that file changes upstream, and the run prints a few stage-progress lines before the failure that are elided above.
 
 All 6 keys of the operator contract are reported, not just the enable flag. The shared `components/operator-install` chart consumes every one of them, including the optional `-version` pin, so every one has to be declared.
 +
@@ -354,7 +355,25 @@ For a label that a policy intentionally consumes but that cannot have a sensible
 
 === Auto-discovery
 
-Adding the directory under `policies/stable/` is all that is needed for Argo CD to pick it up. The ApplicationSet picks it up through its `+policies/<tier>/*/kustomization.yaml+` file generator. On the next sync, Argo CD creates a new Application named `autoshift-web-terminal` pointing at that directory. No manual registration is needed.
+Adding the directory under `policies/stable/` is all that is needed for Argo CD to pick it up. The ApplicationSet finds it through the `+policies/<tier>/*/kustomization.yaml+` file generator, creates an Application named `autoshift-web-terminal` pointing at that directory, and no manual registration is needed.
+
+[NOTE]
+====
+That will not happen in this lab, and nothing is wrong if you go looking for it.
+
+The ApplicationSet's git generator reads the repository at `autoshiftGitRepo`, which is the
+upstream `auto-shift/autoshiftv2`. Your `web-terminal` policy exists only in your local clone
+and was never committed or pushed, so Argo CD has no way to see it:
+
+[source,role="execute"]
+----
+oc get applications.argoproj.io -n openshift-gitops | grep web-terminal || echo "not deployed - the policy is only local"
+----
+
+Discovery happens on the repository Argo CD watches. In production that is a commit and a
+push, the same distinction Module 1 drew about `helm upgrade` from a laptop standing in for a
+commit to your own values repository.
+====
 
 === Verify
 
@@ -450,10 +469,13 @@ ls policies/stable/web-terminal/manifests/operator-install/../../../../..
 ----
 
 ----
-CHANGELOG.md  Makefile  README.md  autoshift  components  docs  policies  scripts  tools
+AGENTS.md                     autoshift   images       policies
+CLAUDE.md                     components  mkdocs.yaml  renovate.json
+CODE_OF_CONDUCT.md            docs        openshift-gitops  scripts
+...
 ----
 
-`components` must appear in that output. If it does not, the chart path is miscounted.
+That is the repository root. `components` must appear in it. If it does not, the chart path is miscounted.
 
 == Learning Outcomes
 

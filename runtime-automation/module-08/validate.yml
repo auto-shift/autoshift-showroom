@@ -3,6 +3,16 @@
   connection: local
   gather_facts: false
   tasks:
+    # Module 8 leaves almost no durable cluster-side trace, and the OCI state it used to
+    # check is not present when this button is reachable:
+    #   - Fallbacks A, B and C are documented as complete paths and never enter OCI mode.
+    #   - On the full path, Exercise 2's helm upgrades omit the OCI flags, so Helm drops
+    #     autoshiftOciRepo and the deployment is back in git mode by the end of the module.
+    #   - The render output lives in the student's clone, which the runner cannot read: it
+    #     mounts only /app/runtime-automation, /app/artifacts and /app/logs.
+    # So check what actually matters here — the fleet survived the deploy-mode switching and
+    # the mirror labels were reverted — and report the deploy mode without requiring it.
+
     - name: Read the ApplicationSet generator type
       ansible.builtin.shell: >-
         oc get applicationset autoshift-policies -n openshift-gitops
@@ -11,30 +21,50 @@
       changed_when: false
       failed_when: false
 
-    - name: Count Applications sourcing from an OCI registry
-      ansible.builtin.shell: >-
-        oc get applications.argoproj.io -n openshift-gitops -o yaml
-        | grep -c 'repoURL: oci://'
-      register: oci
-      changed_when: false
-      failed_when: false
-
-    - name: Count Applications that reconciled against the registry
+    - name: Count the policy Applications
       ansible.builtin.shell: >-
         oc get applications.argoproj.io -n openshift-gitops --no-headers
-        | awk '$2=="Synced"' | wc -l | tr -d ' '
-      register: synced
+        | wc -l | tr -d ' '
+      register: apps
       changed_when: false
       failed_when: false
 
-    - validation_check:
-        check: "{{ '\"list\"' in (gen.stdout | default('')) or 'elements' in (gen.stdout | default('')) }}"
-        msg: "The ApplicationSet switched to the OCI list generator"
+    - name: Count Applications stuck at Unknown
+      ansible.builtin.shell: >-
+        oc get applications.argoproj.io -n openshift-gitops --no-headers
+        | awk '$2=="Unknown"' | wc -l | tr -d ' '
+      register: unknown
+      changed_when: false
+      failed_when: false
+
+    - name: Read the disconnected-mirror label on local-cluster
+      ansible.builtin.shell: >-
+        oc get managedcluster local-cluster --show-labels --no-headers
+        | tr ',' '\n' | sed -n 's|^autoshift.io/disconnected-mirror=||p'
+      register: mirror
+      changed_when: false
+      failed_when: false
+
+    # A single validation_check per module. The action plugin accepts only
+    # pass_msg/error_msg (never msg) and returns on the first failing check, so
+    # every condition is folded into one check and the detail goes into one
+    # report. buttons.js turns each ✅/❌ line into a step chip.
+    - name: Evaluate the checks
+      ansible.builtin.set_fact:
+        _apps_ok: "{{ (apps.stdout | default('0') | int) > 0 }}"
+        _unknown_ok: "{{ (unknown.stdout | default('0') | int) == 0 }}"
+        _mirror_ok: "{{ (mirror.stdout | default('') | trim) != 'true' }}"
+        _oci_now: "{{ 'elements' in (gen.stdout | default('')) or '\"list\"' in (gen.stdout | default('')) }}"
+
+    - name: Build the report
+      ansible.builtin.set_fact:
+        _report: |
+          {{ '✅' if _apps_ok else '❌' }} The policy Applications are deployed ({{ apps.stdout | default(0) }} found)
+          {{ '✅' if _unknown_ok else '❌' }} No Application is stuck at Unknown after the deploy-mode switching ({{ unknown.stdout | default(0) }} Unknown)
+          {{ '✅' if _mirror_ok else '❌' }} The disconnected-mirror label is not left enabled (value: {{ mirror.stdout | default('absent') or 'absent' }})
+          ℹ️ Deploy mode now: {{ 'OCI list generator' if _oci_now else 'git generator' }}. Either is expected — Exercise 2 returns the deployment to git mode, and the fallback paths never leave it.
 
     - validation_check:
-        check: "{{ (oci.stdout | default('0') | int) > 0 }}"
-        msg: "Applications source from the OCI registry ({{ oci.stdout | default(0) }} found)"
-
-    - validation_check:
-        check: "{{ (synced.stdout | default('0') | int) > 0 }}"
-        msg: "Applications reconciled against the registry ({{ synced.stdout | default(0) }} Synced)"
+        check: "{{ _apps_ok and _unknown_ok and _mirror_ok }}"
+        pass_msg: "{{ _report }}"
+        error_msg: "{{ _report }}"

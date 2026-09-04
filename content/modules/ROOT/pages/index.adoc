@@ -33,14 +33,14 @@ Prior ACM or OpenShift GitOps experience is not required, but the lab moves at a
 * An OpenShift cluster with cluster-admin access. Validated on {ocp_version}
 * Helm 3.x installed on your workstation
 * The `oc` CLI configured and authenticated
-* Git and standard shell tools (`make`, `curl`)
+* Git and standard shell tools (`make`, `curl`, `jq`, `yq`)
 * Go {go_version} or later (required for Module 7)
 
 == Workshop environment
 
-The lab runs on a single hub cluster.
-The hub manages itself as `local-cluster`.
-No additional spoke clusters are provisioned.
+The lab starts on a single hub cluster, which manages itself as `local-cluster`.
+In module 3 you declare a spoke cluster on AWS and AutoShift provisions it while you continue
+with the other modules; module 10 verifies it inherited its configuration and tears it down.
 You clone the AutoShift repository and drive everything from your terminal using `helm` and `oc`.
 
 The key versions in this lab:

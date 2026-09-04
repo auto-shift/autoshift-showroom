@@ -123,9 +123,28 @@
 
   // ── Solve / Validate buttons ──────────────────────────────────────────────
 
+  // The placeholders in content/ are plain [.solve-button-placeholder]#...#
+  // spans, which Asciidoctor renders without a data-module attribute. Fall back
+  // to the page filename, which is where the module number actually lives:
+  //   03-module-01-bootstrap.html -> module-01
+  // That matches the directory name under runtime-automation/ that the stream
+  // endpoint looks for.
+  function moduleName(el) {
+    var explicit = el.getAttribute('data-module');
+    if (explicit) return explicit;
+    var file = window.location.pathname.split('/').pop() || '';
+    var m = file.match(/module-(\d+)/);
+    if (!m) {
+      console.warn('[showroom] no module in data-module or page name:', file);
+      return null;
+    }
+    return 'module-' + m[1];
+  }
+
   function initSolve() {
     document.querySelectorAll('.solve-button-placeholder').forEach(function (p) {
-      var m = p.getAttribute('data-module');
+      var m = moduleName(p);
+      if (!m) return;
       var wrap = document.createElement('div');
       wrap.className = 'btn-section';
       wrap.innerHTML = '<button class="solve-btn" data-module="' + m + '">🚀 Solve Module</button>';
@@ -138,7 +157,8 @@
 
   function initValidate() {
     document.querySelectorAll('.validate-button-placeholder').forEach(function (p) {
-      var m = p.getAttribute('data-module');
+      var m = moduleName(p);
+      if (!m) return;
       var wrap = document.createElement('div');
       wrap.className = 'btn-section';
       wrap.innerHTML = '<button class="validate-btn" data-module="' + m + '">✓ Validate Module</button>';

@@ -231,7 +231,7 @@ oc create secret generic aws-creds \
   --from-file=pullSecret=/tmp/.dockerconfigjson
 ----
 
-Note the `subs="attributes"` on this block. AsciiDoc does not expand attribute references inside delimited code blocks by default. The `subs="attributes"` directive expands `\{aws_access_key_id}` and `\{aws_secret_access_key}` to the values injected by the lab environment, so you never type a key. Shell variables like `$HOME` are unaffected by that substitution and are resolved by your shell at runtime, which is why both can appear in the same command.
+Your AWS keys are filled in by the lab environment, so you never type or paste one. `$HOME` is resolved by your shell when the command runs.
 
 === Verify
 
@@ -269,14 +269,26 @@ Resist the habit of running `oc get secret ... -o yaml` here. That prints the ba
 
 === Enable cluster-install on the hub
 
-The `hub-minimal.yaml` clusterset has no `cluster-install` label. Add it using the same append pattern you used in earlier modules. Open `autoshift/values/clustersets/hub-minimal.yaml` and add the 2 labels under `hubClusterSets.hub.labels`:
+The `hub-minimal.yaml` clusterset has no `cluster-install` label. Add the 2 labels under
+`hubClusterSets.hub.labels`, using the same append pattern as earlier modules. The file ends
+inside that block, so appending at 6-space indentation puts them in the right place:
 
-[source,yaml]
+[source,role="execute"]
 ----
-hubClusterSets:
-  hub:
-    labels:
-      # ... existing labels ...
+cat >> autoshift/values/clustersets/hub-minimal.yaml << 'EOF'
+      cluster-install: 'true'
+      acm-enable-provisioning: 'true'
+EOF
+----
+
+Confirm they landed:
+
+[source,role="execute"]
+----
+tail -2 autoshift/values/clustersets/hub-minimal.yaml
+----
++
+----
       cluster-install: 'true'
       acm-enable-provisioning: 'true'
 ----
@@ -355,10 +367,15 @@ cp autoshift/values/clusters/_example-cluster-install-aws.yaml \
    autoshift/values/clusters/spoke-aws-1.yaml
 ----
 
-Edit `autoshift/values/clusters/spoke-aws-1.yaml` to the following minimal working configuration. Each field is explained below.
+Replace `autoshift/values/clusters/spoke-aws-1.yaml` with the following minimal working configuration. Each field is explained below.
 
-[source,yaml,subs="attributes"]
+The copy you just made is the full example, with 3 control-plane nodes and 3 workers. This
+overwrites it. Run the block rather than retyping it: an indentation slip here is not
+discovered until the install fails, 20 minutes later.
+
+[source,role="execute",subs="attributes"]
 ----
+cat > autoshift/values/clusters/spoke-aws-1.yaml << 'EOF'
 clusters:
   spoke-aws-1:
     config:
@@ -412,6 +429,7 @@ clusters:
             iops: 2000
             size: 100
             type: io1
+EOF
 ----
 
 Field-by-field explanation:
@@ -470,7 +488,22 @@ If your hub is itself a multi-zone cluster in the same sandbox account, it may a
 
 Check before you start. In the AWS console, open *EC2 -> Elastic IPs* and compare the count against your account's quota under *Service Quotas -> EC2 -> EC2-VPC Elastic IPs*. If there is no headroom, release an unused address or skip the provisioning exercises: modules 4 to 9 do not depend on them.
 
-Stop a stuck provision cleanly by setting `createCluster: 'false'` and re-applying. Hive runs an uninstall job and releases whatever it did create.
+Stopping a stuck provision takes 2 steps, and the flag alone is not one of them.
+`createCluster: 'false'` only stops the policy emitting the ClusterDeployment; it never deletes
+anything, so on its own it leaves the cluster and the bill exactly where they are. Deleting the
+ClusterDeployment while the flag is still `'true'` does not work either, because the policy is
+enforcing and recreates it.
+
+Set `createCluster: 'false'`, re-apply, wait for the change to reach
+`spoke-aws-1.rendered-config`, and only then run:
+
+[source,bash]
+----
+oc delete clusterdeployment spoke-aws-1 -n spoke-aws-1
+----
+
+That is what triggers Hive's uninstall job. Module 10's Teardown section walks through the
+same 2 steps with the commands to confirm each one.
 ====
 
 Size the control plane accordingly: a single node runs the control plane and all workloads, so `m5.2xlarge` is the practical minimum.
@@ -516,8 +549,13 @@ oc get configmap -n {policy_namespace} | grep spoke-aws-1
 ----
 
 ----
-spoke-aws-1.rendered-config   1      30s
+managed-cluster-config.spoke-aws-1   1      30s
+managed-cluster.spoke-aws-1          2      30s
+spoke-aws-1.rendered-config          1      30s
 ----
+
+Three ConfigMaps carry the cluster's name. `spoke-aws-1.rendered-config` is the one the
+cluster-install chain reads; the other 2 hold the label and config data that produced it.
 
 The `cluster-config-maps` policy built this ConfigMap from your values file. The cluster-install policy chain reads it to generate every provisioning resource.
 
@@ -528,12 +566,16 @@ Confirm the `ClusterDeployment` appeared:
 oc get clusterdeployment -n spoke-aws-1
 ----
 
+[subs="attributes"]
 ----
-NAME          PLATFORM   REGION      INSTALLED   AGE
-spoke-aws-1   aws        us-east-1   false       2m
+NAME          INFRAID             PLATFORM   REGION      VERSION   CLUSTERTYPE   PROVISIONSTATUS   POWERSTATE   AGE
+spoke-aws-1   spoke-aws-1-xxxxx   aws        {aws_region}   4.22.11             Provisioning                    2m
 ----
++
+`PROVISIONSTATUS` moves from `Initialized` to `Provisioning`, and reaches `Provisioned` only
+when the install finishes. `INFRAID` is generated per attempt, so yours will differ.
 
-`INSTALLED: false` is expected. Hive is provisioning.
+A `PROVISIONSTATUS` short of `Provisioned` is expected here. Hive is still working.
 
 
 == Both provisions are now running
@@ -568,9 +610,13 @@ out of Elastic IPs. The default quota is 5 per region, and the hub cluster alrea
 for its own NAT gateways, so a second cluster has none left. The installer reports this indirectly
 as `infrastructure was not ready`, which does not mention addresses at all.
 
-Confirm it:
+Confirm it in the AWS console: compare *EC2 -> Elastic IPs* against your quota under
+*Service Quotas -> EC2 -> EC2-VPC Elastic IPs*.
 
-[source,role="execute"]
+If you have the AWS CLI to hand, these give the same 2 numbers. It is not one of the lab's
+required tools, so there is no run button:
+
+[source,bash]
 ----
 aws ec2 describe-addresses --query 'length(Addresses)' --output text
 aws service-quotas get-service-quota --service-code ec2 --quota-code L-0263D0A3 \

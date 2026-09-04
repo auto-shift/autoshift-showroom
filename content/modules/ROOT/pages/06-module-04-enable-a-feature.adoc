@@ -36,7 +36,7 @@ Every operator policy in AutoShift reads the same 5-label contract:
 * `<component>-source`: the CatalogSource name. Defaults to `redhat-operators`.
 * `<component>-source-namespace`: the namespace where the CatalogSource lives. Defaults to `openshift-marketplace`.
 
-`hub.yaml` carries the reference form for NFD near line 391, with the operator disabled and the version label commented out:
+`hub.yaml` carries the reference form for NFD, with the operator disabled and the version label commented out:
 
 [source,yaml]
 ----
@@ -46,12 +46,12 @@ node-feature-discovery-subscription-name: nfd
 node-feature-discovery-channel: stable
 node-feature-discovery-source: redhat-operators
 node-feature-discovery-source-namespace: openshift-marketplace
-# node-feature-discovery-version: 'nfd.4.18.0-202511261113'
+# node-feature-discovery-version: 'nfd.4.22.0-202608191301'
 ----
 
 [NOTE]
 ====
-The commented version in `hub.yaml` names a 4.18-era ClusterServiceVersion (CSV) and is illustrative only. It shows the format, `nfd.<ocp-minor>.<patch>-<timestamp>`, not a value to copy. Your cluster runs a newer release, so the CSV you see in Exercise 2 will differ. Always read the CSV name off the cluster rather than copying an example.
+The commented version in `hub.yaml` is illustrative only. It shows the format, `nfd.<ocp-minor>.<patch>-<timestamp>`, not a value to copy. The build timestamp identifies one specific catalog build, so the CSV you read in Exercise 2 will differ even on the same OpenShift minor. Always read the CSV name off the cluster rather than copying an example.
 ====
 
 You write the same 5 labels into `hub-minimal.yaml` with the enable flag set to `'true'`.
@@ -60,11 +60,11 @@ You write the same 5 labels into `hub-minimal.yaml` with the enable flag set to 
 +
 [source,role="execute"]
 ----
-grep -c 'node-feature-discovery' autoshift/values/clustersets/hub-minimal.yaml || echo "0 matches"
+grep -c 'node-feature-discovery' autoshift/values/clustersets/hub-minimal.yaml
 ----
 +
 ----
-0 matches
+0
 ----
 
 . Append all 5 labels to the file. The 6-space indentation places them inside the `hubClusterSets.hub.labels` block:
@@ -132,7 +132,13 @@ oc get managedcluster local-cluster -o json | grep '"autoshift\.io/node-feature-
 +
 ----
             "autoshift.io/node-feature-discovery": "true",
+            "autoshift.io/node-feature-discovery-channel": "stable",
+            "autoshift.io/node-feature-discovery-source": "redhat-operators",
+            "autoshift.io/node-feature-discovery-source-namespace": "openshift-marketplace",
+            "autoshift.io/node-feature-discovery-subscription-name": "nfd",
 ----
++
+All 5 contract labels are stamped, not just the enable flag.
 
 . The NFD Placement predicate requires `autoshift.io/node-feature-discovery: 'true'`. The label is now present, so `local-cluster` appears in the PlacementDecision. Read the cluster names rather than the object, because a single PlacementDecision carries the selection for every cluster the predicate matches:
 +
@@ -147,19 +153,32 @@ oc get placementdecision -n {policy_namespace} \
 local-cluster
 ----
 
-. ACM dispatched `policy-nfd-operator-install` to `local-cluster` through the PlacementBinding. Confirm the policy is Compliant:
+. ACM dispatched `policy-nfd-operator-install` to `local-cluster` through the PlacementBinding. Confirm the replicated policy is Compliant on this cluster. Give the operator a few moments to install first; it is not instant:
 +
-[source,role="execute",subs="attributes"]
+[source,role="execute"]
 ----
-oc get policy policy-nfd-operator-install -n {policy_namespace}
+oc get policy -n local-cluster | grep nfd-operator-install
 ----
 +
 ----
-NAME                        REMEDIATION ACTION   COMPLIANCE STATE   AGE
-policy-nfd-operator-install   enforce            Compliant          2m
+policies-autoshift.policy-nfd-operator-install   enforce   Compliant   2m
 ----
++
+[NOTE]
+====
+Read the replica in `local-cluster`, not the root policy in `{policy_namespace}`.
 
-. The OperatorPolicy inside `policy-nfd-operator-install` created a Subscription named `nfd` in the `openshift-nfd` namespace. Confirm the Subscription exists:
+The root policy aggregates compliance across *every* cluster its Placement selects. From
+Module 3 onward that includes `spoke-aws-1`, which carries the same NFD labels and is
+registered as a ManagedCluster within a few minutes of the apply, long before it finishes
+installing. A cluster with no verdict yet contributes no result, so the root policy's
+`COMPLIANCE STATE` column reads **blank** until the spoke is fully up.
+
+That blank is correct behavior, not a fault. The replica in the cluster namespace answers the
+question this step is actually asking: did the policy succeed *here*.
+====
+
+. The OperatorPolicy inside `policy-nfd-operator-install` created a Subscription named `nfd` in the `openshift-nfd` namespace. OLM then resolves and installs the operator, which takes a short while. Confirm the Subscription exists:
 +
 [source,role="execute"]
 ----
@@ -182,9 +201,11 @@ oc get csv -n openshift-nfd --no-headers | awk '/^nfd\./ {print $1, $NF}'
 nfd.4.22.0-202608191301 Succeeded
 ----
 +
+The build timestamp will differ on your cluster. What matters is `Succeeded`.
++
 [IMPORTANT]
 ====
-Filter on the `nfd.` prefix. A plain `oc get csv -n openshift-nfd` lists every ClusterServiceVersion visible in that namespace, not only the one you just installed. Operators installed for all namespaces are visible from every namespace, so on a working cluster that command returns 9 or more rows and NFD is not necessarily the first. The next exercise reads a CSV name programmatically, and taking the wrong row there is the single easiest way to break this module.
+Filter on the `nfd.` prefix. A plain `oc get csv -n openshift-nfd` lists every ClusterServiceVersion visible in that namespace, not only the one you just installed. An operator installed for all namespaces has its CSV copied into every namespace, so this one also carries at least the OpenShift GitOps operator, and any operator you enable later adds another. The rows are sorted by name, so which one lands first depends on what is installed. The next exercise reads a CSV name programmatically, and taking the wrong row there is the single easiest way to break this module.
 ====
 +
 [NOTE]
@@ -196,16 +217,16 @@ That Placement declares no `spec.clusterSets`, so it serves every clusterset bou
 
 === Verify
 
-Confirm both NFD policies are Compliant before continuing:
+Confirm both NFD policies are Compliant on this cluster before continuing:
 
-[source,role="execute",subs="attributes"]
+[source,role="execute"]
 ----
-oc get policy -n {policy_namespace} | grep nfd
+oc get policy -n local-cluster | grep nfd
 ----
 
 ----
-policy-nfd-instance-deploy    enforce   Compliant   3m
-policy-nfd-operator-install   enforce   Compliant   3m
+policies-autoshift.policy-nfd-instance-deploy    enforce   Compliant   3m
+policies-autoshift.policy-nfd-operator-install   enforce   Compliant   3m
 ----
 
 == Exercise 2: Control which versions an operator may run
@@ -245,7 +266,7 @@ So `Manual` here means "ACM decides", not "nothing will upgrade". If you go look
 
 Read the current CSV name from the cluster, then use it as the version label value.
 
-. Read the installed CSV name. Select the row by its `nfd.` prefix rather than by position, for the reason given in Exercise 1:
+. Read the installed CSV name. Match on the `nfd.` prefix, since other operators' ClusterServiceVersions are visible in this namespace too:
 +
 [source,role="execute"]
 ----
@@ -535,17 +556,7 @@ nfd    nfd       redhat-operators   stable
 +
 The Subscription is still present. ACM created it via the OperatorPolicy when the policy was active. Removing the policy binding does not trigger deletion.
 
-Four things survive: the Subscription, the ClusterServiceVersion, the `openshift-nfd` namespace, and the `NodeFeatureDiscovery` custom resource the second policy created. OperatorPolicy has no operand awareness, so the operand outlives the policy that produced it. If you need to remove NFD entirely after this lab, delete in operand-first order:
-
-[source,role="execute"]
-----
-oc delete nodefeaturediscovery nfd-instance -n openshift-nfd
-oc delete sub nfd -n openshift-nfd
-oc delete csv -n openshift-nfd -l operators.coreos.com/nfd.openshift-nfd
-oc delete ns openshift-nfd
-----
-
-Deleting the namespace first, or removing the operator before its operand, leaves the `NodeFeatureDiscovery` CR with a finalizer and no controller left to clear it. The namespace then sits in `Terminating` indefinitely.
+Four things survive: the Subscription, the ClusterServiceVersion, the `openshift-nfd` namespace, and the `NodeFeatureDiscovery` custom resource the second policy created. OperatorPolicy has no operand awareness, so the operand outlives the policy that produced it. Removing NFD for real is a manual step, and it comes after the Verify below: do not run it yet.
 
 === Verify
 
@@ -569,6 +580,27 @@ oc get ns openshift-nfd
 NAME           STATUS   AGE
 openshift-nfd  Active   15m
 ----
+
+=== Optional cleanup, after you have finished the module
+
+Only now, and only if you want NFD gone. Everything after this point in the workshop assumes the
+namespace still exists, so skip this on a first run through: Module 5 and Module 6 both read the
+`node-feature-discovery` entries in `hub-minimal.yaml`, and Module 6 re-enables the operator.
+
+Click *Validate Module* at the bottom of this page before you run any of it. One of the checks reads
+the NFD ClusterServiceVersion, so it reports a failure once the operator is gone.
+
+Delete in operand-first order. These have no run button on purpose:
+
+[source,bash]
+----
+oc delete nodefeaturediscovery nfd-instance -n openshift-nfd
+oc delete sub nfd -n openshift-nfd
+oc delete csv -n openshift-nfd -l operators.coreos.com/nfd.openshift-nfd
+oc delete ns openshift-nfd
+----
+
+Deleting the namespace first, or removing the operator before its operand, leaves the `NodeFeatureDiscovery` CR with a finalizer and no controller left to clear it. The namespace then sits in `Terminating` indefinitely.
 
 == Troubleshooting
 

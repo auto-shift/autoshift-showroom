@@ -51,7 +51,7 @@ By the end of this module, you'll be able to:
 
 In git mode, the Argo CD repo server's CMP sidecar renders each PolicyGenerator (PG) directory at sync time. The CMP init-container image is resolved by a render-time lookup of ACM's `multicluster-operators-hub-subscription` deployment. Without ACM running, that lookup fails, the init-container cannot start, and every PG policy stays unrendered. This is why source installs require ACM before GitOps.
 
-In OCI mode, the render happens at release time. The `make render-policy-charts` target runs kustomize with the PolicyGenerator plugin against every PG directory in the repository and writes the result as a stock Helm chart to `.helm-charts/policies/<name>/`. By the time ArgoCD pulls the chart from the registry, all PolicyGenerator processing is already done. No CMP sidecar is configured, and the ACM-before-GitOps ordering constraint disappears. OCI installations can bootstrap GitOps before ACM without issue.
+In OCI mode, the render happens at release time. The `make render-policy-charts` target runs kustomize with the PolicyGenerator plugin against every PG directory in the repository and writes the result as a packaged Helm chart into `.helm-charts/policies/`. By the time ArgoCD pulls the chart from the registry, all PolicyGenerator processing is already done. No CMP sidecar is configured, and the ACM-before-GitOps ordering constraint disappears. OCI installations can bootstrap GitOps before ACM without issue.
 
 === Install the toolchain
 
@@ -284,14 +284,19 @@ QUAY_INIT=$(curl -sk -X POST "https://${QUAY_ROUTE}/api/v1/user/initialize" \
   --data "{\"username\":\"quayadmin\",\"password\":\"${QUAY_PASSWORD}\",\"email\":\"quayadmin@example.com\",\"access_token\":true}")
 
 echo "$QUAY_INIT"
-QUAY_TOKEN=$(printf '%s' "$QUAY_INIT" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+QUAY_TOKEN=$(printf '%s' "$QUAY_INIT" \
+  | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+test -n "$QUAY_TOKEN" && echo "token captured" || echo "NO TOKEN: read the response above"
 ----
 
-The response contains an `access_token`, captured above as `$QUAY_TOKEN`. Keep it: Step 8 uses it to
-create the organization you push into. The endpoint refuses to run once any user exists, so it
-cannot be replayed: a second call returns `Cannot initialize user in a non-empty database`. If you
-see that on your first call, a user already exists and you will need those credentials rather than
-the ones you just chose.
+The response contains an `access_token`, captured above as `$QUAY_TOKEN`. Confirm `token captured`
+before moving on, because Step 8 uses it to create the organization you push into and an empty
+token surfaces there as a `401`, which reads like a password problem and is not one.
+
+The endpoint refuses to run once any user exists, so it cannot be replayed: a second call returns
+`Cannot initialize user in a non-empty database`. If you see that on your first call, a user already
+exists and you will need those credentials rather than the ones you just chose.
 
 The `ConsoleLink` created by the Quay policy is visible in the OpenShift web console under the
 application launcher.
@@ -374,6 +379,22 @@ curl -sk -X POST "https://${QUAY_ROUTE}/api/v1/organization/" \
 +
 Re-running it returns `A user or organization with this name already exists`, which is harmless.
 
+. Clear the charts rendered in Part 1. They were built at `0.0.0-dev`, and `push-charts` pushes everything in `.helm-charts/` by glob — leave them and you publish a junk `0.0.0-dev` tag for every policy alongside the real one, at double the push time:
++
+[source,role="execute"]
+----
+make clean
+----
+
+. Stamp `0.1.0` into every `Chart.yaml` in the tree. `render-policy-charts` writes the version it is given, but `package-charts` packages each hand-authored chart at whatever version its own `Chart.yaml` carries, which is `0.0.1`. Without this the 4 Helm holdouts publish as `0.0.1` while Step 9 asks for `0.1.0`, and their Argo CD Applications fail to resolve:
++
+[source,role="execute"]
+----
+make update-versions VERSION=0.1.0
+----
++
+This rewrites files in your clone. That is fine here: the clone is scratch, and nothing is pushed back to GitHub.
+
 . Render the PolicyGenerator directories to Helm charts:
 +
 [source,role="execute"]
@@ -386,6 +407,19 @@ make render-policy-charts VERSION=0.1.0
 [source,role="execute"]
 ----
 make package-charts VERSION=0.1.0
+----
++
+The closing count reads `0 bootstrap + 0 policies + 1 main`. Those first 2 numbers are always 0: Make expands them before the directories exist. The `ls` listings above them are the real output.
+
+. Write the deploy list that OCI mode reads. `autoshift/files/` is not in git, and no target you have run so far creates it. Skip this and Step 9 renders an ApplicationSet with 1 empty entry: `helm` exits 0, Argo CD reports no error, and not a single policy is deployed:
++
+[source,role="execute"]
+----
+make generate-policy-list VERSION=0.1.0
+----
++
+----
+✓ Generated policy-list.txt (2 helm + 51 rendered PolicyGenerator)
 ----
 
 . Push:
@@ -409,7 +443,7 @@ always exists. Every path below, and in Step 9, changes to match.
 
 Every path is built from `REGISTRY_NAMESPACE`, so the target pushes bootstrap charts to `oci://$QUAY_ROUTE/autoshift/bootstrap`, the main chart to `oci://$QUAY_ROUTE/autoshift`, and every policy chart to `oci://$QUAY_ROUTE/autoshift/policies`. That is the same layout as the published release at `oci://quay.io/autoshift/`, which is the point of keeping the default.
 
-The main chart is the one exception. `package-charts` packages each chart at the version in its own `Chart.yaml`, which is not `0.1.0`, while `push-charts` looks for `autoshift-0.1.0.tgz` by exact name. That file does not exist, so the main chart is quietly skipped and the target still exits 0. The bootstrap and policy charts push by glob and are unaffected, and Step 9 pulls only from `/policies`, so the walkthrough is unaffected. Aligning the main chart is what `make release` does by rewriting chart versions across the working tree. Do not run it here: it is only appropriate for a proper tagged release.
+`push-charts` finds the bootstrap and policy charts by glob, but it looks for the main chart as `autoshift-0.1.0.tgz` by exact name and skips it silently if that file is missing. `make update-versions` is what guarantees the name matches. This sequence is the same work `make release` does, minus the release-only steps: a git tag, the mirror artifacts, and the bootstrap installer scripts. Do not run `make release` here.
 
 === Step 9: Redeploy AutoShift from OCI
 
@@ -423,13 +457,17 @@ helm upgrade --install autoshift ./autoshift \
   -f autoshift/values/clustersets/hub-minimal.yaml \
   -f autoshift/values/clustersets/managed-minimal.yaml \
   -f autoshift/values/clusters/spoke-aws-1.yaml \
-  --set autoshiftOciRegistry=true \
   --set autoshiftOciVersion=0.1.0 \
   --set "autoshiftOciRepo=oci://$QUAY_ROUTE/autoshift/policies"
 ----
 
 [NOTE]
 ====
+`autoshiftOciRepo` alone selects OCI mode: 1 value both chooses the mode and supplies the address,
+so there is no way to set half of it. An older boolean, `autoshiftOciRegistry`, still works and
+still decides the mode when present, but it is deprecated. Setting it stamps an
+`autoshift.io/deprecated-values` annotation onto the ApplicationSet you inspect in Step 10.
+
 `autoshiftOciVersion` is required in OCI mode and must match the `VERSION` you pushed. The chart
 rejects the upgrade without it, because a mutable `latest` tag is unreliable with Argo CD OCI.
 ====
@@ -437,7 +475,7 @@ rejects the upgrade without it, because a mutable `latest` tag is unreliable wit
 
 === Step 10: Observe the ApplicationSet switch
 
-In git mode the ApplicationSet uses a `git:` generator that auto-discovers `+policies/*+` directories. In OCI mode it switches to a `list:` generator that reads `autoshift/files/policy-list.txt`. That file was generated by `make generate-policy-list` during the render step: it contains 1 policy name per line, 1 entry per chart in `.helm-charts/policies/`. The ApplicationSet creates 1 Argo CD Application per entry and pulls the corresponding Helm chart from the OCI registry.
+In git mode the ApplicationSet uses a `git:` generator that auto-discovers `+policies/*+` directories. In OCI mode it switches to a `list:` generator that reads `autoshift/files/policy-list.txt`, the file you generated in Step 8: it contains 1 policy name per line, 1 entry per chart in `.helm-charts/policies/`. The ApplicationSet creates 1 Argo CD Application per entry and pulls the corresponding Helm chart from the OCI registry.
 
 Inspect the ApplicationSet to confirm the generator type has changed:
 
@@ -473,7 +511,7 @@ ls /tmp/inspect-autoshift/openshift-gitops/
 Chart.yaml  templates  values.yaml
 ----
 
-The `openshift-gitops` policy is one of the 4 Helm holdouts. Its chart structure in the OCI registry is identical to the source tree. A rendered PG chart in the registry has the same structure: `Chart.yaml`, `templates/`, `values.yaml`.
+The `openshift-gitops` policy is one of the 4 Helm holdouts. Its chart structure in the OCI registry is identical to the source tree. A rendered PG chart is the same kind of object with 1 addition: alongside `Chart.yaml`, `values.yaml` and `templates/` it carries `files/rendered.yaml`, the PolicyGenerator output that its single template emits.
 
 == Exercise 2: Flip the fleet to mirrored catalog sources
 
@@ -520,7 +558,26 @@ oc get operatorpolicy -n local-cluster -o yaml | grep 'source:'
 
 All `source:` fields now end in `-mirror`. No policy code changed. The ternary evaluated the cluster label and built the alternate string at hub template resolution time.
 
-This is safe to observe on a live cluster even without a mirror registry. ACM will report the OperatorPolicies as `NonCompliant` because the `-mirror` CatalogSource does not exist yet. That state is expected until you create the mirrored catalogs. The observation is the point, not the compliance state.
+This is safe to observe on a live cluster even without a mirror registry. The OperatorPolicies go `NonCompliant`, because the `-mirror` CatalogSource does not exist yet. Confirm it:
+
+[source,role="execute"]
+----
+oc get operatorpolicy -n local-cluster \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.compliant}{"\n"}{end}'
+----
+
+----
+install-operator-acm	NonCompliant
+install-operator-gitops	NonCompliant
+install-operator-odf	NonCompliant
+install-operator-quay	NonCompliant
+----
++
+The exact list depends on which operators you have enabled. Note that a plain
+`oc get operatorpolicy` will not show this: unlike `Policy`, the OperatorPolicy resource has no
+compliance column, so the state is only visible through the status field.
+
+That `NonCompliant` state is expected until you create the mirrored catalogs. The observation is the point, not the compliance state.
 
 === Step 3: Understand the disconnected-mirror policy
 
@@ -700,7 +757,7 @@ stringData:
   enableOCI: "true"
   insecure: "true"
   username: quayadmin
-  password: <the password you set in Step 5>
+  password: ${QUAY_PASSWORD}
 EOF
 ----
 

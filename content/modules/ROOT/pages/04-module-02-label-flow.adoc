@@ -32,6 +32,21 @@ The cluster-labels Argo CD Application has already rendered the `cluster-set.hub
 
 Read each broken link in order.
 
+[IMPORTANT]
+====
+First make sure `policy-foundation` has finished syncing. It creates the `hub` ManagedClusterSet
+and its binding, and until both exist the reads below report a different — and equally
+correct — story about a hub that is not ready yet, rather than the null state this exercise is
+about.
+
+[source,role="execute"]
+----
+oc get managedclusterset hub
+----
+
+Re-run until it returns the `hub` row. It usually takes 2 to 3 minutes after Module 1.
+====
+
 . Check which clusterset `local-cluster` belongs to:
 +
 [source,role="execute"]
@@ -123,7 +138,7 @@ That returns a decision object right now, before any cluster is assigned. Select
 
 === Verify
 
-A policy with no PlacementDecision has no cluster to evaluate against. Confirm the compliance state column is blank:
+A policy whose PlacementDecision names no cluster has nothing to evaluate against. Confirm the compliance state column is blank:
 
 [source,role="execute",subs="attributes"]
 ----
@@ -358,7 +373,7 @@ NAME                       SYNC STATUS   HEALTH STATUS
 autoshift-cluster-labels   Synced        Healthy
 ----
 
-. Confirm the label arrived on `local-cluster`:
+. Confirm the label arrived on `local-cluster`. A Synced Application means Argo CD wrote the ConfigMap; ACM still has to re-evaluate the policy and stamp the label, which takes a few seconds longer. Re-run until it appears:
 +
 [source,role="execute"]
 ----
@@ -429,7 +444,7 @@ The `lab-test` line does not appear. The `owning` labels remain.
 
 === Placement shows no clusters selected after clusterset assignment
 
-*Issue:* After running `oc label managedcluster local-cluster cluster.open-cluster-management.io/clusterset=hub --overwrite`, no PlacementDecision appears.
+*Issue:* After running `oc label managedcluster local-cluster cluster.open-cluster-management.io/clusterset=hub --overwrite`, the PlacementDecision still names no cluster in its `status.decisions`.
 
 *Diagnosis:* Verify the label was applied and that a ManagedClusterSet named `hub` exists:
 

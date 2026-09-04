@@ -25,14 +25,24 @@
       changed_when: false
       failed_when: false
 
-    - validation_check:
-        check: "{{ 'hub' in (sets.stdout_lines | default([])) }}"
-        msg: "The hub clusterset exists ({{ sets.stdout_lines | default([]) | join(', ') }})"
+    # A single validation_check per module. The action plugin accepts only
+    # pass_msg/error_msg (never msg) and returns on the first failing check, so
+    # every condition is folded into one check and the detail goes into one
+    # report. buttons.js turns each ✅/❌ line into a step chip.
+    - name: Evaluate the checks
+      ansible.builtin.set_fact:
+        _sets_ok: "{{ 'hub' in (sets.stdout_lines | default([])) }}"
+        _upg_ok: "{{ (upg.stdout | default('0') | int) >= 1 }}"
+        _cs_ok: "{{ cs.stdout | default('') | length > 0 }}"
+
+    - name: Build the report
+      ansible.builtin.set_fact:
+        _report: |
+          {{ '✅' if _sets_ok else '❌' }} The hub clusterset exists ({{ sets.stdout_lines | default([]) | join(', ') or 'none' }})
+          {{ '✅' if _upg_ok else '❌' }} The openshift-upgrade policies are present on the hub ({{ upg.stdout | default(0) }} found)
+          {{ '✅' if _cs_ok else '❌' }} local-cluster belongs to a clusterset, so gradual rollout can move it ({{ cs.stdout | default('none') or 'none' }})
 
     - validation_check:
-        check: "{{ (upg.stdout | default('0') | int) >= 1 }}"
-        msg: "The openshift-upgrade policies are present on the hub ({{ upg.stdout | default(0) }} found)"
-
-    - validation_check:
-        check: "{{ cs.stdout | default('') | length > 0 }}"
-        msg: "local-cluster belongs to a clusterset, so gradual rollout can move it ({{ cs.stdout | default('none') }})"
+        check: "{{ _sets_ok and _upg_ok and _cs_ok }}"
+        pass_msg: "{{ _report }}"
+        error_msg: "{{ _report }}"
