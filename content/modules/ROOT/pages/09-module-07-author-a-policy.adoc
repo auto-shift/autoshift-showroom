@@ -209,7 +209,7 @@ kind: Policy
 
 This is the same staging the integration test performs in Exercise 3, which is why that test can validate every policy without a cluster.
 
-`helm template` does not work on this directory. The `docs/developer-guide.md` Quick Start section still shows `helm template policies/stable/...` as the validation command. That command fails on every PolicyGenerator directory in this repository. Use kustomize with the PolicyGenerator plugin as shown above.
+`helm template` does not work on this directory, and neither does anything else that expects a Helm chart: a PolicyGenerator directory has no `Chart.yaml`. Use kustomize with the PolicyGenerator plugin, as shown above.
 
 === Verify
 
@@ -241,7 +241,7 @@ The 5 stages are:
 . *Resolved-YAML validation*: parses the fully-resolved output. Any malformed YAML or `<no value>` leak fails the test. A `<no value>` occurs when a hub template references a label that is absent from the seed.
 . *Label contract*: checks that every `autoshift.io/<key>` referenced in a policy template is declared as a key in at least 1 `_example*.yaml` file. A consumed but undeclared label fails CI with `Missing`.
 
-`tools/` is its own Go module, independent from the repository root. The test must run from inside that directory. Running `go test ./tools/internal/resolver/...` from the repo root fails with "directory prefix ... does not contain main module". The suite requires Go {go_version} or later.
+`tools/` is its own Go module, independent from the repository root, so Go has to be pointed at it. `go test ./tools/internal/resolver/...` from the repo root fails with "directory prefix ... does not contain main module"; `-C tools` runs the test in that module without changing your working directory. The suite requires Go {go_version} or later.
 
 === Run the test
 
@@ -249,7 +249,7 @@ The 5 stages are:
 +
 [source,role="execute"]
 ----
-cd tools && go test -tags integration ./internal/resolver/...
+go test -C tools -tags integration ./internal/resolver/...
 ----
 +
 The test fails at the label contract stage. The `placement.yaml` you generated references `autoshift.io/web-terminal` in its Placement predicate, and the shared operator-install chart references the other 5. None are declared in `autoshift/values/clustersets/_example.yaml` yet, so stage 5 reports all 6 as missing. The failure names each key, the policies that consume it, and exactly where to declare it:
@@ -283,22 +283,16 @@ All 6 keys of the operator contract are reported, not just the enable flag. The 
 ====
 The re-run command printed in that message does not work as written. It uses a repository-root path, and `tools/` is a separate Go module, so running it from the root fails with `directory prefix tools/internal/resolver does not contain main module`.
 
-Use the `cd tools` form instead:
+Point Go at the module with `-C` instead. It runs the test as if from inside `tools/` without changing your working directory:
 
 [source,role="execute"]
 ----
-cd tools && go test -tags integration -run TestPipeline_EndToEnd ./internal/resolver/...
+go test -C tools -tags integration -run TestPipeline_EndToEnd ./internal/resolver/...
 ----
 ====
 +
 This is the label contract: any `autoshift.io/<key>` a policy consumes must be declared in `_example.yaml`. The reason is practical. The test seeds hub template resolution with the labels in that file. A missing declaration means the seed does not contain the key, hub template resolution produces `<no value>`, and the resolved manifest is invalid YAML. Requiring the declaration forces authors to document every label in the same place the test looks for it.
 
-. Return to the repository root before editing the values file:
-+
-[source,role="execute"]
-----
-cd ..
-----
 
 === Fix the label contract
 
@@ -342,7 +336,7 @@ grep 'web-terminal' autoshift/values/clustersets/_example.yaml
 +
 [source,role="execute"]
 ----
-cd tools && go test -tags integration ./internal/resolver/...
+go test -C tools -tags integration ./internal/resolver/...
 ----
 +
 ----
@@ -374,19 +368,6 @@ Discovery happens on the repository Argo CD watches. In production that is a com
 push, the same distinction Module 1 drew about `helm upgrade` from a laptop standing in for a
 commit to your own values repository.
 ====
-
-=== Verify
-
-Confirm the test passes with the label declared:
-
-[source,role="execute"]
-----
-cd tools && go test -tags integration ./internal/resolver/...
-----
-
-----
-ok  	github.com/auto-shift/autoshiftv2/tools/internal/resolver	10.234s
-----
 
 == Troubleshooting
 
@@ -424,11 +405,11 @@ make install-policy-generator
 
 *Cause:* `tools/` is its own Go module. When run from the repo root, there is no `go.mod` at the path you specified, so Go cannot locate the module.
 
-*Fix:* Run the test from inside `tools/`:
+*Fix:* Use `-C tools` so Go runs in that module. This works from the repository root and leaves your working directory alone:
 
 [source,role="execute"]
 ----
-cd tools && go test -tags integration ./internal/resolver/...
+go test -C tools -tags integration ./internal/resolver/...
 ----
 
 === Test fails with `Missing` on a label you just declared
@@ -483,7 +464,7 @@ By completing this module, you should now understand:
 
 * ✓ The generator script produces the correct PolicyGenerator directory structure, including the shared `components/operator-install` Helm chart wiring that every operator policy requires. Writing those files by hand omits that wiring and introduces formatting errors
 * ✓ A PolicyGenerator directory is rendered by kustomize with the PolicyGenerator plugin enabled, not by `helm template`. The local render retains the `${...}` substitution placeholders because the CMP sidecar performs that substitution in the live cluster before kustomize runs
-* ✓ The integration test runs from inside `tools/`, which is its own Go module. Running it from the repository root fails with a module path error
+* ✓ The integration test targets `tools/`, which is its own Go module. A bare `go test ./tools/...` from the repository root fails with a module path error; `go test -C tools` runs it correctly without leaving the root
 * ✓ The integration test runs 5 stages: Helm template render, hub template resolution, spoke template resolution, resolved-YAML validation, and the label contract. Any `autoshift.io/<key>` a policy template consumes must be declared in `autoshift/values/clustersets/_example.yaml`. A consumed but undeclared key fails CI with `Missing`
 
 [.solve-button-placeholder]#solve-button-placeholder#

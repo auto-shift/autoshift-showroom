@@ -30,7 +30,7 @@ A hub template with a `| default` expression does not raise NonCompliant when it
 
 === Authoring new policies
 
-Module 7 showed how to create an operator policy from scratch. The generator script produces the 4 required files in the correct PolicyGenerator structure. Rendering the output requires kustomize with the PolicyGenerator plugin, not `helm template`. The integration test in `tools/` runs 5 stages: Helm render, hub template resolution, spoke template resolution, resolved-YAML validation, and the label contract. Any `autoshift.io/<key>` a policy consumes must be declared in `autoshift/values/clustersets/_example.yaml`. A consumed but undeclared key fails CI with a `Missing` message that names the policy and the fix. The `tools/` directory is its own Go module. The test must run from inside it.
+Module 7 showed how to create an operator policy from scratch. The generator script produces the 4 required files in the correct PolicyGenerator structure. Rendering the output requires kustomize with the PolicyGenerator plugin, not `helm template`. The integration test in `tools/` runs 5 stages: Helm render, hub template resolution, spoke template resolution, resolved-YAML validation, and the label contract. Any `autoshift.io/<key>` a policy consumes must be declared in `autoshift/values/clustersets/_example.yaml`. A consumed but undeclared key fails CI with a `Missing` message that names the policy and the fix. The `tools/` directory is its own Go module, so the test is run with `go test -C tools`.
 
 === OCI publishing and disconnected environments
 

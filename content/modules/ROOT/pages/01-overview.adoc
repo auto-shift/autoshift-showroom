@@ -41,8 +41,8 @@ OpenShift GitOps. The GitOps repo-server runs a PolicyGenerator CMP sidecar whos
 image is resolved by a render-time lookup of ACM's `multicluster-operators-hub-subscription`
 deployment. If you bootstrap GitOps first, that lookup finds nothing and the CMP is
 misconfigured. This applies to source installs only. In OCI mode the charts are pre-rendered and no
-CMP is involved, which is why `docs/quickstart.md` installs GitOps first in its OCI section. Module
-1 walks through the correct sequence and shows what the error looks like if you invert it.
+CMP is involved, so the ordering constraint does not exist there. Module 1 walks through the
+correct sequence and shows what the error looks like if you invert it.
 
 == The label flow
 
