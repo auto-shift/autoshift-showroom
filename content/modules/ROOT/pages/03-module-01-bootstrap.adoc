@@ -127,7 +127,7 @@ spec.template.spec.initContainers[1].image: Required value
 
 No image means no CMP. No CMP means no PolicyGenerator. No PolicyGenerator means no policies render or sync.
 
-`docs/quickstart.md` lists GitOps before ACM in its OCI installation section, which is the wrong order for source installs. OCI mode deploys pre-rendered Helm charts and has no dependency on the CMP init-container. For source installs, ACM must come first. If you install GitOps first by mistake, the recovery is to run `helm upgrade` on the GitOps chart again once ACM's operator is up.
+The constraint applies to source installs only. OCI mode deploys pre-rendered Helm charts and has no dependency on the CMP init-container, so the order does not matter there. If you install GitOps first by mistake, the recovery is to run `helm upgrade` on the GitOps chart again once ACM's operator is up.
 
 === Step 1: Install ACM
 

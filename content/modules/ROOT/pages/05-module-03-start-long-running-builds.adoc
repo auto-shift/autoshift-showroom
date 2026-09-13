@@ -329,7 +329,7 @@ OCP_VERSION=$(oc get clusterversion version -o jsonpath='{.status.desired.versio
 echo "$OCP_VERSION"
 ----
 
-. Create the minimal managed clusterset. The heredoc delimiter is unquoted so `${OCP_VERSION}` is substituted as the file is written:
+. Create the minimal managed clusterset. The heredoc delimiter is unquoted so `$\{OCP_VERSION}` is substituted as the file is written:
 +
 [source,role="execute",subs="attributes"]
 ----
@@ -339,7 +339,7 @@ cat > autoshift/values/clustersets/managed-minimal.yaml << EOF
 managedClusterSets:
   managed:
     labels:
-      openshift-version: '${OCP_VERSION}'
+      openshift-version: '$\{OCP_VERSION}'
 
       ### Node Feature Discovery, declared for a cluster that does not exist yet
       node-feature-discovery: 'true'
